@@ -2,14 +2,14 @@
 # -*- coding: utf-8 -*-
 """
 @author: Liam Till
-University of Oklahoma 2016
-METR4330 and personal project
+University of Oklahoma / Unversity of Reading
 wrfplot.py
+Python 2.x
 Python script to plot various WRF model output. Plots are saved as PNG.
 example usage: wrfplot.py --infile filename.nc --sfc --tunit C --ppn -punit mm --td
 Will plot surface chart and dewpoint in Celcius and precipitation in mm.
 Use wrfplot.py --help to list all options
-Last modified: 03/04/16
+Last modified: 06/04/16
 """
 
 import matplotlib
@@ -28,7 +28,7 @@ from scipy.ndimage.filters import gaussian_filter
 
 # option parser
 usage="usage: %prog [options] \n example usage: wrfplot.py --infile filename.nc --sfc --tunit C --td --ppn --punit mm"
-parser = OptionParser(usage=usage, version="%prog 5.2 by Liam Till")
+parser = OptionParser(usage=usage, version="%prog 5.3 by Liam Till")
 parser.add_option("--sfc", dest="sfc",action="store_true",help="Plot surface chart with 2m temp, wind barbs and MSLP")
 parser.add_option("--t2", dest="t2", action="store_true", help="Plot 2m temp and wind barbs only")
 parser.add_option("--mslp", dest="mslp", action="store_true", help="Plot MSLP only")
@@ -81,9 +81,6 @@ except: # quit if cant read file
 outdir = opt.outdir # output image dir
 
 ## BASEMAP STUFF
-# dimensions of domain in staggered unit / grid points
-x_dim = nc.dimensions['west_east']
-y_dim = nc.dimensions['south_north']
 
 #thin factor for wind barbs
 thin = opt.thin
@@ -97,6 +94,9 @@ standlon = float(nc.STAND_LON)
 xlat     = nc.variables['XLAT']
 xlong    = nc.variables['XLONG']
 map_proj = int(nc.MAP_PROJ)
+# dimensions of domain
+x_dim = len(xlat[0,0,:])
+y_dim = len(xlong[0,:,0])
 
 # Get dx and dy. Grid size
 dx = float(nc.DX)
@@ -113,26 +113,27 @@ meridians = np.arange(0,360,10)
 # find projection and create map. Only LCC tested.
 if map_proj == 1: #lambert conformal. 
     proj = 'lcc'
-    m = Basemap(resolution='i',projection=proj,width=width_meters,height=height_meters,lat_0=cen_lat,lon_0=cen_lon,lat_1=truelat1,lat_2=truelat2)
-    # get lat/lons of ny by nx evenly space grid              
-    lons, lats = m.makegrid(x_dim, y_dim)
-    x, y = m(lons, lats) # compute map proj coordinates.
-    proj = 'Lambert Conformal'
+    projname = 'Lambert Conformal'
 elif map_proj == 2: # polar stereographic
     proj = 'npstere'
-    m = Basemap(resolution='i',projection=proj,llcrnrlon=xlong[0,0,0],llcrnrlat=xlat[0,0,0],urcrnrlon=xlong[0,-1,-1],urcrnrlat=xlat[0,-1,-1],lat_0=cen_lat,lon_0=cen_lon)    
-    x, y = m(xlong[0,:,:],xlat[0,:,:])
-    proj = 'Polar Stereographic'
+    projname = 'Polar Stereographic'
 elif map_proj == 3: # mercator
     proj = 'merc'
-    m = Basemap(resolution='i',projection=proj,llcrnrlon=xlong[0,0,0],llcrnrlat=xlat[0,0,0],urcrnrlon=xlong[0,-1,-1],urcrnrlat=xlat[0,-1,-1],lat_0=cen_lat,lon_0=cen_lon)    
-    x, y = m(xlong[0,:,:],xlat[0,:,:])
-    proj = 'Mercator'
+    projname = 'Mercator'
 else: # not supported and quit
     print "Projection ", map_proj, "unknown"
     print "QUITTING"
     sys.exit()
-print "Using map projection: ", proj
+
+# make map
+m = Basemap(resolution='i',projection=proj,width=width_meters,height=height_meters,lat_0=cen_lat,lon_0=cen_lon,lat_1=truelat1,lat_2=truelat2) 
+#m = Basemap(resolution='i',projection=proj,llcrnrlon=xlong[0,0,0],llcrnrlat=xlat[0,0,0],urcrnrlon=xlong[0,-1,-1],urcrnrlat=xlat[0,-1,-1],lat_0=cen_lat,lon_0=cen_lon)    
+#x, y = m(xlong[0,:,:],xlat[0,:,:])            
+# get lat/lons of ny by nx evenly space grid 
+# make lons, lats and x, y co ordinates
+lons, lats = m.makegrid(x_dim, y_dim)
+x, y = m(lons, lats) # compute map proj coordinates.
+print "Using map projection: ", projname
 
 ## GET DATA
 times = nc.variables['Times'] #each time output in wrf nc file
@@ -898,7 +899,8 @@ def absvort500(): # plot 500mb absolute vorticity
     dvdx = np.gradient(vinterp,dx,dx)[1] # calc dvdx
     dudy = np.gradient(uinterp,dx,dx)[0] # calc dudy
     avort = dvdx - dudy + fcoriolis # absolute vorticity
-    clevs = np.arange(-4,50,2) # levels used on COD
+    clevs = np.linspace(np.min(avort), np.max(avort), 10)    
+    #clevs = np.arange(-4,50,2) # levels used on COD
     cs = m.contourf(x,y,avort,clevs,cmap=cm2.get_cmap('gist_ncar'))
     title = '500mb Absolute Vorticity \n Valid: '
     ftitle = '500absvort-' 
@@ -1018,6 +1020,6 @@ if opt.verbose: #verbose output
     print "Center lat: ", cen_lat
     print "Center lon: ", cen_lon
     print "Model top: ", nc.variables['P_TOP'][0]
-    print "Map projection: ", proj
+    print "Map projection: ", proj, '-' , projname
 
 nc.close() # close netcdf file

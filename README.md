@@ -1,7 +1,7 @@
 # WRF Plot
 # wrfplot.py
 
-Python script to plot various WRF-ARW output.
+Python script to plot various WRF-ARW output. Written for Python 2.x
 
 # Currently plots
 

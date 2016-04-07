@@ -24,11 +24,11 @@ import datetime
 from optparse import OptionParser
 import os.path
 import sys
-from scipy.ndimage.filters import gaussian_filter
+from scipy.ndimage.filters import gaussian_filter, minimum_filter, maximum_filter
 
 # option parser
 usage="usage: %prog [options] \n example usage: wrfplot.py --infile filename.nc --sfc --tunit C --td --ppn --punit mm"
-parser = OptionParser(usage=usage, version="%prog 5.3 by Liam Till")
+parser = OptionParser(usage=usage, version="%prog 5.4 by Liam Till")
 parser.add_option("--sfc", dest="sfc",action="store_true",help="Plot surface chart with 2m temp, wind barbs and MSLP")
 parser.add_option("--t2", dest="t2", action="store_true", help="Plot 2m temp and wind barbs only")
 parser.add_option("--mslp", dest="mslp", action="store_true", help="Plot MSLP only")
@@ -270,6 +270,16 @@ def makeplot(data,title,cblabel,clevs,cbticks,ftitle): # function to make plots
     else:
         plt.show()
 
+def extrema(mat,mode='wrap',window=10): # function to find the pressure extrema
+    """find the indices of local extrema (min and max)
+    in the input array."""
+    mn = minimum_filter(mat, size=window, mode=mode)
+    mx = maximum_filter(mat, size=window, mode=mode)
+    # (mat == mx) true if pixel is equal to the local max
+    # (mat == mn) true if pixel is equal to the local in
+    # Return the indices of the maxima, minima
+    return np.nonzero(mat == mn), np.nonzero(mat == mx)
+
 def unstagger(data,dim): #function to unstagger data from staggered grid given dimension
     nd = len(data.shape)
     if dim == 'X' or dim == 'U':
@@ -411,14 +421,41 @@ def t2wind(): # plot t2 and wind barbs
 def mslponly(): # plot MSLP only
     #create figure
     plt.figure(figsize=(8,8))
+    x, y = m(lons, lats)
     psfchpa = psfc[time]*0.01 #convert Pa to hPa
     #t2c = t2[time]-273.15 #convert temp to celcius      
     mslp = psfchpa*(np.exp((g*thgt[0])/(R*t2[time]))) # calc MSLP
     mslp = gaussian_filter(mslp, sigma=3) #smooth wiggles
+    #find local min and local max
+    local_min, local_max = extrema(mslp, mode='wrap', window=50)
     #mslp = psfchpa*np.exp((g*M*thgt[0])/(Rg*t2[time]))        
     clevs = np.arange(900,1055,2.)        
     cs = m.contour(x,y,mslp,clevs,colors='k',linewidths=2.)
     plt.clabel(cs, inline=True, fmt='%1.0f', fontsize=12, colors='k')
+    xlows = x[local_min];   xhighs = x[local_max]
+    ylows = y[local_min];   yhighs = y[local_max]
+    lowvals = mslp[local_min]; highvals = mslp[local_max]
+    # plot lows as blue L's, with min pressure value underneath.
+    xyplotted = []
+    # don't plot if there is already a L or H within dmin meters.
+    yoffset = 0.022*(m.ymax-m.ymin)
+    dmin = yoffset
+    for x,y,p in zip(xlows, ylows, lowvals):
+        if x < m.xmax and x > m.xmin and y < m.ymax and y > m.ymin:
+            dist = [np.sqrt((x-x0)**2+(y-y0)**2) for x0,y0 in xyplotted]
+            if not dist or min(dist) > dmin:
+                plt.text(x,y,'L',fontsize=14,fontweight='bold', ha='center',va='center',color='b')
+                plt.text(x,y-yoffset,repr(int(p)),fontsize=12, ha='center',va='top',color='b', bbox = dict(boxstyle="square",ec='None',fc=(1,1,1,0.5)))
+                xyplotted.append((x,y))
+    # plot highs as red H's, with max pressure value underneath.
+    xyplotted = []
+    for x,y,p in zip(xhighs, yhighs, highvals):
+        if x < m.xmax and x > m.xmin and y < m.ymax and y > m.ymin:
+            dist = [np.sqrt((x-x0)**2+(y-y0)**2) for x0,y0 in xyplotted]
+            if not dist or min(dist) > dmin:
+                plt.text(x,y,'H',fontsize=14,fontweight='bold', ha='center',va='center',color='r')
+                plt.text(x,y-yoffset,repr(int(p)),fontsize=12, ha='center',va='top',color='r', bbox = dict(boxstyle="square",ec='None',fc=(1,1,1,0.5)))
+                xyplotted.append((x,y))
     title = "MSLP (hPa) \n Valid: "
     ftitle = 'mslp-'
     cblabel = ''
@@ -634,6 +671,7 @@ def upperair(): # plot upper air chart for given level. geopotential height, win
 def surface(): # plot surface chart. t2, wind barbs and mslp
     # create figure
     plt.figure(figsize=(8,8))
+    x, y = m(lons, lats)
     t2c = t2[time]-273.15 #convert temp to celcius
     if opt.tunit == 'F':
         t2f = (9./5. * t2c)+32 #convert celcius to fahrenheit
@@ -649,6 +687,7 @@ def surface(): # plot surface chart. t2, wind barbs and mslp
     psfchpa = psfc[time]*0.01 #convert Pa to hPa
     mslp = psfchpa*(np.exp((g*thgt[0])/(R*t2[time]))) # calc MSLP
     mslp = gaussian_filter(mslp, sigma=3) # smooth wiggles
+    local_min, local_max = extrema(mslp, mode='wrap', window=50)
     #make x and y grid points for barbs
     #yy = np.arange(0, len(y), 8)
     #xx = np.arange(0, len(x), 8)
@@ -667,7 +706,32 @@ def surface(): # plot surface chart. t2, wind barbs and mslp
     pclevs = np.arange(900,1055,2.)        
     pcs = m.contour(x,y,mslp,pclevs,colors='k',linewidths=2.)
     plt.clabel(pcs, inline=True, fmt='%1.0f', fontsize=12, colors='k')
-   
+    xlows = x[local_min];   xhighs = x[local_max]
+    ylows = y[local_min];   yhighs = y[local_max]
+    lowvals = mslp[local_min]; highvals = mslp[local_max]
+    # plot lows as blue L's, with min pressure value underneath.
+    xyplotted = []
+    # don't plot if there is already a L or H within dmin meters.
+    yoffset = 0.022*(m.ymax-m.ymin)
+    dmin = yoffset
+    for x,y,p in zip(xlows, ylows, lowvals):
+        if x < m.xmax and x > m.xmin and y < m.ymax and y > m.ymin:
+            dist = [np.sqrt((x-x0)**2+(y-y0)**2) for x0,y0 in xyplotted]
+            if not dist or min(dist) > dmin:
+                plt.text(x,y,'L',fontsize=14,fontweight='bold', ha='center',va='center',color='b')
+                plt.text(x,y-yoffset,repr(int(p)),fontsize=12, ha='center',va='top',color='b', bbox = dict(boxstyle="square",ec='None',fc=(1,1,1,0.5)))
+                xyplotted.append((x,y))
+    # plot highs as red H's, with max pressure value underneath.
+    xyplotted = []
+    for x,y,p in zip(xhighs, yhighs, highvals):
+        if x < m.xmax and x > m.xmin and y < m.ymax and y > m.ymin:
+            dist = [np.sqrt((x-x0)**2+(y-y0)**2) for x0,y0 in xyplotted]
+            if not dist or min(dist) > dmin:
+                plt.text(x,y,'H',fontsize=14,fontweight='bold',
+                        ha='center',va='center',color='r')
+                plt.text(x,y-yoffset,repr(int(p)),fontsize=12, ha='center',va='top',color='r', bbox = dict(boxstyle="square",ec='None',fc=(1,1,1,0.5)))
+                xyplotted.append((x,y))
+                
     makeplot(cs,title,cblabel,clevs,cbticks,ftitle)
     
 def snowaccum(): # plot snow accumulation
@@ -898,13 +962,14 @@ def absvort500(): # plot 500mb absolute vorticity
     vinterp = linear_interp(Vnew,totalp,500) 
     dvdx = np.gradient(vinterp,dx,dx)[1] # calc dvdx
     dudy = np.gradient(uinterp,dx,dx)[0] # calc dudy
-    avort = dvdx - dudy + fcoriolis # absolute vorticity
-    clevs = np.linspace(np.min(avort), np.max(avort), 10)    
-    #clevs = np.arange(-4,50,2) # levels used on COD
+    avort = dvdx - dudy + fcoriolis # absolute vorticity 
+    avort = np.multiply(avort, 1e5) # scale up for levels
+    clevs = np.arange(-6, 52, 2)    
+    #clevs = np.linspace(-5, 50, 18)
     cs = m.contourf(x,y,avort,clevs,cmap=cm2.get_cmap('gist_ncar'))
     title = '500mb Absolute Vorticity \n Valid: '
     ftitle = '500absvort-' 
-    cblabel = r'$s^{-1}$'
+    cblabel = r'$10^{-5} s^{-1}$'
     cbticks = True
     makeplot(cs,title,cblabel,clevs,cbticks,ftitle)
     

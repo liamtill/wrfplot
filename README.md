@@ -33,7 +33,6 @@ Use wrfplot.py --help to see all possible options.
 - Plotting of severe weather parameters such as; CAPE, SRH, 0-6 SHR etc
 - Plotting of soundings at a given latitude and longitude
 - Get data for given latitude and longitude such as max/min of variables
-- Plot highs and lows of pressure extrema. Plot H and L letters on extrema
 - Revise reflectivity routine. Possibly use FORTRAN routines to compute reflectivity
 - Tidy code up to improve efficiency
 

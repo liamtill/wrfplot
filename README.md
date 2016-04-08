@@ -21,6 +21,9 @@ Python script to plot various WRF-ARW output. Written for Python 2.x
 - Upper level charts (geopotential height, wind barbs and temperature)
 - H7-H5 lapse rates
 - 500mb absolute vorticity
+- 0-6km Shear
+- Vertical Velocity
+- IR Temp
 
 Also supports saving plots as PNG images.
 

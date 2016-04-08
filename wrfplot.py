@@ -9,7 +9,7 @@ Python script to plot various WRF model output. Plots are saved as PNG.
 example usage: wrfplot.py --infile filename.nc --sfc --tunit C --ppn -punit mm --td
 Will plot surface chart and dewpoint in Celcius and precipitation in mm.
 Use wrfplot.py --help to list all options
-Last modified: 06/04/16
+Last modified: 08/04/16
 """
 
 import matplotlib
@@ -28,7 +28,7 @@ from scipy.ndimage.filters import gaussian_filter, minimum_filter, maximum_filte
 
 # option parser
 usage="usage: %prog [options] \n example usage: wrfplot.py --infile filename.nc --sfc --tunit C --td --ppn --punit mm"
-parser = OptionParser(usage=usage, version="%prog 5.4 by Liam Till")
+parser = OptionParser(usage=usage, version="%prog 5.6 by Liam Till")
 parser.add_option("--sfc", dest="sfc",action="store_true",help="Plot surface chart with 2m temp, wind barbs and MSLP")
 parser.add_option("--t2", dest="t2", action="store_true", help="Plot 2m temp and wind barbs only")
 parser.add_option("--mslp", dest="mslp", action="store_true", help="Plot MSLP only")
@@ -43,8 +43,8 @@ parser.add_option("--simdbz", dest="simdbz", action="store_true", help="Plot sim
 parser.add_option("--compdbz", dest="compdbz", action="store_true", help="Plot composite reflectivity")
 parser.add_option("--lcl", dest="lcl", action="store_true", help="Plot LCL (lifted condensation level)")
 parser.add_option("--thetae", dest="thetae", action="store_true", help="Plot Theta-e (equivalent potential temperature)")
-parser.add_option("--ua", dest="ua", action="store_true", help="Plot chart at given pressure levels (hPa)")
-parser.add_option("--lvl", dest="lvl", help="Specify levels for upper level charts option --ua. Comma seperated e.g 250,500", default="500")
+parser.add_option("--ua", dest="ua", action="store_true", help="Plot geopotential height, temperature and wind barbs at given pressure levels (hPa), --lvl")
+parser.add_option("--lvl", dest="lvl", help="Pressure levels to interpolate to for upper level charts option --ua, --vv. Comma seperated e.g 250,500", default="500")
 parser.add_option("--run", dest="run", type="string", help="Model initialisation time", default="00")
 parser.add_option("--indir", dest="indir", type="string", help="Directory of the NetCDF file", default="")
 parser.add_option("--outdir", dest="outdir", type="string", help="Directory to save plots too", default="")
@@ -58,6 +58,9 @@ parser.add_option("--auto", dest="auto", action="store_true", help="Enable auto 
 parser.add_option("--barbsize", dest="barbsize", type="int", help="Set the length of the wind barbs", default=7)
 parser.add_option("--75lr", dest="lr75", action="store_true", help="Plot the H7-H5 lapse rates")
 parser.add_option("--vort500", dest="vort500", action="store_true", help="Plot the 500mb absolute vorticity")
+parser.add_option("--shear06", dest="shear06", action="store_true", help="Plot the 0-6km shear")
+parser.add_option("--vv", dest="vv", action="store_true", help="Plot vertical velocity at specified levels --lvl")
+parser.add_option("--irtemp", dest="irtemp", action="store_true", help="Plot IR Brightness Temperature")
 (opt, arg) = parser.parse_args()
 
 indir = opt.indir # dir of input file
@@ -363,6 +366,31 @@ def linear_interp(data, totalp, plev):
     totaldist = upperP - lowerP
     #calc weighting
     weight = np.abs( ( (plev*100.) - lowerP) / (totaldist) )
+    #calc interpolated value    
+    outVal = ( belowVal * (1 - weight) ) + ( aboveVal * weight)
+
+    return outVal
+    
+# weighted linear interpolation of 3d array of data to height level
+def linear_interp_height(data, totalgp, height):
+        #find index of level above plev    
+    heights = totalgp / 9.81    
+    above = np.argmax(totalgp < height, axis=0)
+    below = above - 1 # index of pressure below
+    # pressure at level above plev 
+    nz,ny,nx = totalgp.shape
+    upperH = heights.reshape(nz,ny*nx)[above.flatten(),range(ny*nx)].reshape(ny,nx)
+    #pressure at level below plev
+    lowerH = heights.reshape(nz,ny*nx)[below.flatten(),range(ny*nx)].reshape(ny,nx)
+    # value above plev
+    nz,ny,nx = data.shape
+    aboveVal = data.reshape(nz, ny*nx)[above.flatten(),range(ny*nx)].reshape(ny,nx)
+    #value below plev
+    belowVal = data.reshape(nz, ny*nx)[below.flatten(),range(ny*nx)].reshape(ny,nx)
+    # calc total dist betweek upper and lower
+    totaldist = upperH - lowerH
+    #calc weighting
+    weight = np.abs( ( (height) - lowerH) / (totaldist) )
     #calc interpolated value    
     outVal = ( belowVal * (1 - weight) ) + ( aboveVal * weight)
 
@@ -973,6 +1001,76 @@ def absvort500(): # plot 500mb absolute vorticity
     cbticks = True
     makeplot(cs,title,cblabel,clevs,cbticks,ftitle)
     
+def shr06(): # plot the 0-6km shear vector
+    # create figure
+    plt.figure(figsize=(8,8))
+    ph = nc.variables['PH'] #perturbation geopotential
+    phb = nc.variables['PHB'] #base state geopotential
+    totalgp = phb[time,:,:,:]+ph[time,:,:,:] # total geopotential
+    totalgp = unstagger(totalgp,'Z') #total geopotential unstaggered
+    U = nc.variables['U'][time] # U wind component
+    V = nc.variables['V'][time] # V wind component
+    Unew = unstagger(U,'U') # unstagger u
+    Vnew = unstagger(V,'V') # unstagger v
+    u10kts = u10[time]*1.94384449 # sfc wind in kts
+    v10kts = v10[time]*1.94384449 
+    u6 = linear_interp_height(Unew, totalgp, 6000) # interpolate u to 6km
+    v6 = linear_interp_height(Vnew, totalgp, 6000) # interpolate v to 6km
+    u6kts = u6 * 1.94384449 # convert 6km to kts
+    v6kts = v6 * 1.94384449
+    ushr = u6kts - u10kts # calc 0-6 shr in kts
+    vshr = v6kts - v10kts
+    # plot data
+    cs = m.barbs(x[::thin,::thin], y[::thin,::thin], ushr[::thin,::thin], vshr[::thin,::thin],length=opt.barbsize) #plot barbs
+    title = '0-6km Shear \n Valid: '
+    ftitle = 'shr06-' 
+    cblabel = 'kts'
+    clevs = False
+    cbticks = False
+    makeplot(cs,title,cblabel,clevs,cbticks,ftitle)
+    
+def vertvol(): # plot the vertical velocity at levels
+    W = nc.variables['W'][time] # vertical velocity
+    Wnew = unstagger(W,'W') # unstagger W
+    pb = nc.variables['PB'] #base state pressure, Pa
+    p = nc.variables['P'] # perturbation pressure, Pa
+    totalp = pb[time,:,:,:]+p[time,:,:,:] # total pressure in Pa
+    t = nc.variables['T'] #perturbation potential temperature (theta-t0)
+    t00 = nc.variables['T00'] #base state theta
+    #print t.shape, t00.shape
+    totalTheta = t[time,:,:,:]+t00[0] # total potential temp
+    totalTfac = ( (totalp*0.01) / 1000. )**(R/1004.) # factor to multiply theta by
+    totalT=(totalTheta*totalTfac) # calc temp in K
+    
+    levels = opt.lvl.split(',') # get list of levels
+    for level in levels: 
+        plt.figure(figsize=(8,8)) #create fig for each plot
+        level = int(level) # make it int
+        Wfinal = linear_interp(Wnew,totalp, level) # interpolate W to levels
+        totalTfinal = linear_interp(totalT,totalp,level) # interp temp to levels
+        rhoa = ( level*100. / (R*totalTfinal) ) # density of air
+        vertvol = (- Wfinal * rhoa * g) * 1e-1 # calc vert vol and convert to microbar / s
+        clevs = np.arange(-12, 51 ,3)
+        cs = m.contourf(x,y,vertvol,clevs,cmap=cm2.get_cmap('gist_ncar'))
+        level = str(level)
+        title = level+'mb Vertical Velocity \n Valid: '
+        ftitle = level+'mb-' 
+        cblabel = r'$\mu bs^{-1}$'
+        cbticks = True
+        makeplot(cs,title,cblabel,clevs,cbticks,ftitle)
+        
+def olr_to_temp():
+    plt.figure(figsize=(8,8))
+    olr = nc.variables['OLR'][time]
+    olrtemp = np.power(olr / 5.67e-8, 0.25) - 273.15 # calc temp using Stefan-Boltzman law and convert to deg C
+    clevs = np.arange(-80, 36 ,4)
+    cs = m.contourf(x,y,olrtemp,clevs,cmap=cm2.get_cmap('gist_ncar'))
+    title = 'IR Brightness Temp \n Valid: '
+    ftitle = 'irtemp-' 
+    cblabel = r'$\degree$C'
+    cbticks = True
+    makeplot(cs,title,cblabel,clevs,cbticks,ftitle)
+        
 #### END FUNCTIONS ####
 flag = False # to check for plotting options
 #### BEGIN TIME LOOP ####    
@@ -1061,6 +1159,21 @@ for time in range(times.shape[0]):
     if opt.vort500: # plot 500mb absolute vorticity
         print "Plotting 500mb absolute vorticity for time: ", currtime
         absvort500()
+        flag = True
+        
+    if opt.shear06:
+        print "Plotting 0-6km Shear for time: ", currtime
+        shr06()
+        flag = True
+        
+    if opt.vv:
+        print "Plotting vertical velocity for time: ", currtime
+        vertvol()
+        flag = True
+        
+    if opt.irtemp:
+        print "Plotting IR Brightness Temp for time, ", currtime
+        olr_to_temp()
         flag = True
         
     if flag is False: # do this when no options given

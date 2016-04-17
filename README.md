@@ -43,5 +43,7 @@ Use wrfplot.py --help to see all possible options.
 
 - Simulated and Composite Reflectivity calculations not working correctly. Method used is for Ferrier, WSM5, fixed intercept      microphysics
 - Contour/Color bar levels for various parameters need revising
+- Need to fix vertical velocity calculation
+- 0-6 SHR plots incorrect due to error in linear_interp_height function
 
 Feel free to use and modify this script but please give credit when used. 

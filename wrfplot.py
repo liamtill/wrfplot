@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-@author: Liam Till
+Liam Till
 University of Oklahoma / Unversity of Reading
 wrfplot.py
 Python 2.x
@@ -9,29 +9,37 @@ Python script to plot various WRF model output. Plots are saved as PNG.
 example usage: wrfplot.py --infile filename.nc --sfc --tunit C --ppn -punit mm --td
 Will plot surface chart and dewpoint in Celcius and precipitation in mm.
 Use wrfplot.py --help to list all options
-Last modified: 18/04/16
+Last modified: 23/04/16
 
-Skew-T plotting done with the pyMeteo package available at: https://github.com/cwebster2/pyMeteo
+Skew-T plotting with the pyMeteo package available at: https://github.com/cwebster2/pyMeteo
 Credit to Casey Webster
+
+Skew-t plotting with SHARPpy package available at: https://github.com/sharppy/SHARPpy
+Credit to: Patrick Marsh (SPC), Kelton Halbert (OU School of Meteorology), Greg Blumberg (OU/CIMMS), Tim Supinie (OU School of Meteorology)
 """
 
 import matplotlib
 #matplotlib.use('Agg') # UNCOMMENT THIS ONLY WHEN INVOKING FROM CRON SCRIPT 
 from scipy.io import netcdf # USE SCIPY MODULE
 #from netCDF4 import Dataset # UNCOMMENT TO USE NETCDF 4 MODULE
-from mpl_toolkits.basemap import Basemap, cm
-from matplotlib import cm as cm2
+from mpl_toolkits.basemap import Basemap
+from matplotlib import cm
 import matplotlib.pyplot as plt
+from scipy.ndimage.filters import gaussian_filter
 import numpy as np
 import datetime
 from optparse import OptionParser
 import os.path
 import sys
-from scipy.ndimage.filters import gaussian_filter, minimum_filter, maximum_filter
+import conversions as conv
+import calc_vars as calc
+import plot_funcs as pltfuncs
+import funcs
+import colormaps as cmap
 
 # option parser
 usage="usage: %prog [options] \n example usage: wrfplot.py --infile filename.nc --sfc --tunit C --td --ppn --punit mm"
-parser = OptionParser(usage=usage, version="%prog 5.8 by Liam Till")
+parser = OptionParser(usage=usage, version="%prog 6.0 by Liam Till")
 parser.add_option("--sfc", dest="sfc",action="store_true",help="Plot surface chart with 2m temp, wind barbs and MSLP")
 parser.add_option("--t2", dest="t2", action="store_true", help="Plot 2m temp and wind barbs only")
 parser.add_option("--mslp", dest="mslp", action="store_true", help="Plot MSLP only")
@@ -64,9 +72,11 @@ parser.add_option("--vort500", dest="vort500", action="store_true", help="Plot t
 parser.add_option("--shear06", dest="shear06", action="store_true", help="Plot the 0-6km shear")
 parser.add_option("--vv", dest="vv", action="store_true", help="Plot vertical velocity at specified levels --lvl")
 parser.add_option("--irtemp", dest="irtemp", action="store_true", help="Plot IR Brightness Temperature")
-parser.add_option("--skewt", dest="skewt", action="store_true", help="Plot Skew-T for a location. Uses pyMeteo package.")
-parser.add_option("--slat", dest="slat", type="int", help="Latitude for Skew-T")
-parser.add_option("--slon", dest="slon", type="int", help="Longitude for Skew-T")
+parser.add_option("--skewt", dest="skewt", action="store_true", help="Plot Skew-t for a location. Uses pyMeteo package.")
+parser.add_option("--slat", dest="slat", type="int", help="Latitude for Skew-t")
+parser.add_option("--slon", dest="slon", type="int", help="Longitude for Skew-t")
+parser.add_option("--getij", dest="getij", action="store_true", help="Get i,j and nearest Lat/Lon for entered Lat/Lon")
+parser.add_option("--skewt2", dest="skewt2", action="store_true", help="Plot Skew-t for a location using SHARPpy")
 (opt, arg) = parser.parse_args()
 
 indir = opt.indir # dir of input file
@@ -144,7 +154,7 @@ lons, lats = m.makegrid(x_dim, y_dim)
 x, y = m(lons, lats) # compute map proj coordinates.
 print "Using map projection: ", projname
 
-## GET DATA
+## GET THIS DATA FOR NOW
 times = nc.variables['Times'] #each time output in wrf nc file
 t2 = nc.variables['T2'] #temp at 2m / Kelvin
 u10 = nc.variables['U10'] #u10 wind / ms/s
@@ -152,98 +162,14 @@ v10 = nc.variables['V10'] #v10 wind / ms/s
 psfc = nc.variables['PSFC'] #surface pressure / Pascals
 rainc = nc.variables['RAINC'] # accumulated total cumulus precip
 rainnc = nc.variables['RAINNC'] # accumulated total grid scale precip
-#qvapor = nc.variables['QVAPOR'] #water vapor mixing ratio kg/kg
 thgt = nc.variables['HGT'] #terrain height
 
-#define constants
-g = 9.81 #gravity
-R = 287. #gas constant for dry air
-Rg = 8.31447 #ideal gas constant
-M = 0.0289644 #molar mass of air
-N0rain = 8.0e6 # number conc. for rain
-#N0snow = 2e7 #constant number conc. for snow
-N0gra = 4.0e6 # number conc. for graupel
-#gamma7 = 720. # gamma 7 function
-rhol = 1000. # density of liquid
-rhos = 100. # density of snow
-rhog = 400. # density of graupel
-rhoi = 917. # density of ice
-alpha = 0.224 # alpha (rhol/rhoi)^2*(mod(Ki)^2/mod(Kl)^2)
-Cpd = 1005.7 # J/kg*K
-Lv = 2264760. # J/kg
-
-#general info
+# general info
 init = str(''.join(times[0])).replace('_',' ') # model init time
 alltimes = [] #list to hold all times
 
-## COLOR MAPS
-# define color maps for when the matplotlib ones arent very good
-# color maps created with this amazing online hex gradient color generator
-# http://www.strangeplanet.fr/work/gradient-generator/index.php
-nws_precip_colors = [
-    "#04e9e7",  # 0.01 - 0.10 inches
-    "#019ff4",  # 0.10 - 0.25 inches
-    "#0300f4",  # 0.25 - 0.50 inches
-    "#02fd02",  # 0.50 - 0.75 inches
-    "#01c501",  # 0.75 - 1.00 inches
-    "#008e00",  # 1.00 - 1.50 inches
-    "#fdf802",  # 1.50 - 2.00 inches
-    "#e5bc00",  # 2.00 - 2.50 inches
-    "#fd9500",  # 2.50 - 3.00 inches
-    "#fd0000",  # 3.00 - 4.00 inches
-    "#d40000",  # 4.00 - 5.00 inches
-    "#bc0000",  # 5.00 - 6.00 inches
-    "#f800fd",  # 6.00 - 8.00 inches
-    "#9854c6",  # 8.00 - 10.00 inches
-    "#fdfdfd"]   # 10.00+
-
-precip_colormap = matplotlib.colors.ListedColormap(nws_precip_colors)
-
-nws_dbz_colors = [
-    "#FFFFFF", # 0
-    "#808080", # 5
-    "#00FFFF", # 5-10
-    "#00BFFF", # 10-15
-    "#0000FF", # 15-20
-    "#00FF00", # 20-25
-    "#32CD32", # 25-30
-    "#008000", # 30-35
-    "#FFFF00", # 35-40
-    "#DAA520", # 40-45
-    "#FFA500", # 45-50
-    "#FF0000", # 50-55
-    "#8B0000", # 55-60
-    "#800000", # 60-65
-    "#FF00FF", # 65-70
-    "#8A2BE2", # 70-75
-    "#FFFFFF"] # 75+
-
-dbz_colormap=matplotlib.colors.ListedColormap(nws_dbz_colors)
-
-lcl_colors = ["#FFFFFF", #0 m
-              "#867FFF", #500
-              "#0D00FF", #1000
-              "#0B7F7F", #1500
-              "#09FF00", #2000
-              "#84D200", #2500
-              "#FFA600", #3000
-              "#FF5300", #3500
-              "#FF0000", #4000
-              "#FF0075", #4500
-              "#FF00EA"] #5000
-              
-lcl_colormap=matplotlib.colors.ListedColormap(lcl_colors)
-
-snow_colors = ["#FFFFFF", "#C2BFFF", "#867FFF", "#493FFF", "#0D00FF", "#0C3FBF", "#0B7F7F", "#0ABF3F", "#09FF00", "#46E800", "#84D200", "#C1BC00", "#FFA600", "#FF7C00", "#FF5300", "#FF2900", "#FF0000", "#FF004E", "#FF009C", "#FF00EA"]
-snow_colormap=matplotlib.colors.ListedColormap(snow_colors)
-
-hail_colors = ["#FFFFFF", "#AEAAFF", "#5D55FF", "#0D00FF", "#0B55AA", "#0AAA55", "#09FF00", "#5BE100", "#ADC300", "#FFA600", "#FF6E00", "#FF3700", "#FF0000", "#FF0075", "#FF00EA"]
-hail_colormap=matplotlib.colors.ListedColormap(hail_colors)
-
-irsat_colors = ["#D2D2D2", "#DD9D9D", "#E86969", "#F33434", "#FF0000", "#FF3E00", "#FF7D00", "#FFBC00", "#FFFB00", "#AAFC00", "#55FD00", "#00FF00", "#00AA55", "#0055AA", "#0000FF", "#D2D2D2", "#C3C3C3", "#B4B4B4", "#A5A5A5", "#969696", "#878787", "#787878", "#696969", "#5A5A5A", "#4A4A4A", "#3C3C3C", "#2D2D2D", "#1E1E1E", "#0E0E0E", "#000000"]
-irsat_colormap=matplotlib.colors.ListedColormap(irsat_colors)
-
-### BEGIN FUNCTIONS ###
+### BEGIN PLOT FUNCTIONS ###
+# savefile and makeplot and the functions for putting data on maps may stay here for now #
 
 def savefile(filename): #save plot image as png
     print "Saving file: ", filename           
@@ -283,164 +209,19 @@ def makeplot(data,title,cblabel,clevs,cbticks,ftitle): # function to make plots
         savefile(filename) #save image file
     else:
         plt.show()
-
-def extrema(mat,mode='wrap',window=10): # function to find the pressure extrema
-    """find the indices of local extrema (min and max)
-    in the input array."""
-    mn = minimum_filter(mat, size=window, mode=mode)
-    mx = maximum_filter(mat, size=window, mode=mode)
-    # (mat == mx) true if pixel is equal to the local max
-    # (mat == mn) true if pixel is equal to the local in
-    # Return the indices of the maxima, minima
-    return np.nonzero(mat == mn), np.nonzero(mat == mx)
-
-def unstagger(data,dim): #function to unstagger data from staggered grid given dimension
-    nd = len(data.shape)
-    if dim == 'X' or dim == 'U':
-        if nd == 5:
-            dataout = ( data[:,:,:,:,:-1] + data[:,:,:,:,1:] ) / 2.
-        elif nd == 4:
-            dataout = ( data[:,:,:,:-1] + data[:,:,:,1:] ) / 2.
-        elif nd == 3:
-            dataout = ( data[:,:,:-1] + data[:,:,1:] ) / 2.
-        elif nd == 2:
-            dataout = ( data[:,:-1] + data[:,1:] ) / 2.
-        elif nd == 1:
-            dataout = ( data[:-1] + data[1:] ) / 2.
-        else: pass
-    if dim == 'Y' or dim == 'V':
-        if nd == 5:
-            dataout = ( data[:,:,:,:-1,:] + data[:,:,:,1:,:] ) / 2.
-        elif nd == 4:
-            dataout = ( data[:,:,:-1,:] + data[:,:,1:,:] ) / 2.
-        elif nd == 3:
-            dataout = ( data[:,:-1,:] + data[:,1:,:] ) / 2.
-        elif nd == 2:
-            dataout = ( data[:-1,:] + data[1:,:] ) / 2.
-        elif nd == 1:
-            dataout = ( data[:-1] + data[1:] ) / 2.
-        else: pass
-    if dim == 'Z' or dim == 'W':
-        if nd == 5:
-            dataout = ( data[:,:,:-1,:,:] + data[:,:,1:,:,:] ) / 2.
-        elif nd == 4:
-            dataout = ( data[:,:-1,:,:] + data[:,1:,:,:] ) / 2.
-        elif nd == 3:
-            dataout = ( data[:-1,:,:] + data[1:,:,:] ) / 2.
-        elif nd == 1:
-            dataout = ( data[:-1] + data[1:] ) / 2.
-        else: pass
-    return dataout
-
-# weighted linear interpolation of 3d array of data to pressure level
-def linear_interp(data, totalp, plev):
-    """
-    # Slow iterative way of doing it
-    weight = np.zeros(np.shape(data[0]))
-    outVal = np.zeros(np.shape(data[0]))
-    #print below.shape, above.shape, weight.shape, value.shape
-    for i in range(totalp.shape[0]):
-        for j in range(totalp.shape[1]):
-            for k in range(totalp.shape[2]):
-                currP = totalp[i,j,k]
-                prevP = totalp[i-1,j,k]
-                if plev*100. > currP and plev*100. < prevP:
-                    upper = i
-                    lower = upper-1
-                    #print upper,lower
-                    upperP = totalp[upper,j,k]
-                    lowerP = totalp[lower,j,k]
-                    upperVal = data[upper,j,k]
-                    lowerVal = data[lower,j,k]
-                    totaldist = upperP - lowerP
-                    weight[j,k] = np.abs( ( (plev*100.) - lowerP) / (totaldist) )
-                    currweight = weight[j,k]
-                    #print currweight
-                    outVal[j,k] = ( lowerVal * (1 - currweight) ) + ( upperVal * currweight )
-    #print weight.shape, outVal.shape
-    """         
-    # more efficient way of doing it
-    #find index of level above plev        
-    above = np.argmax(totalp < plev*100., axis=0)
-    below = above - 1 # index of pressure below
-    # pressure at level above plev 
-    nz,ny,nx = totalp.shape
-    upperP = totalp.reshape(nz,ny*nx)[above.flatten(),range(ny*nx)].reshape(ny,nx)
-    #pressure at level below plev
-    lowerP = totalp.reshape(nz,ny*nx)[below.flatten(),range(ny*nx)].reshape(ny,nx)
-    # value above plev
-    nz,ny,nx = data.shape
-    aboveVal = data.reshape(nz, ny*nx)[above.flatten(),range(ny*nx)].reshape(ny,nx)
-    #value below plev
-    belowVal = data.reshape(nz, ny*nx)[below.flatten(),range(ny*nx)].reshape(ny,nx)
-    # calc total dist betweek upper and lower
-    totaldist = upperP - lowerP
-    #calc weighting
-    weight = np.abs( ( (plev*100.) - lowerP) / (totaldist) )
-    #calc interpolated value    
-    outVal = ( belowVal * (1 - weight) ) + ( aboveVal * weight)
-    
-    return outVal
-    
-# weighted linear interpolation of 3d array of data to height level
-def linear_interp_height(data, totalgp, height):
-    #find index of level above plev    
-    heights = (totalgp / 9.81)
-    #print heights
-    #print np.min(heights), np.max(heights)
-    above = np.argmax(heights < height, axis=0)
-    below = above - 1 # index of pressure below
-    #below[below < 0] = 0
-    #print above
-    #print below
-    # pressure at level above plev 
-    nz,ny,nx = heights.shape
-    upperH = heights.reshape(nz,ny*nx)[above.flatten(),range(ny*nx)].reshape(ny,nx)
-    #print upperH
-    #pressure at level below plev
-    lowerH = heights.reshape(nz,ny*nx)[below.flatten(),range(ny*nx)].reshape(ny,nx)
-    #print lowerH
-    # value above plev
-    nz,ny,nx = data.shape
-    aboveVal = data.reshape(nz, ny*nx)[above.flatten(),range(ny*nx)].reshape(ny,nx)
-    #value below plev
-    belowVal = data.reshape(nz, ny*nx)[below.flatten(),range(ny*nx)].reshape(ny,nx)
-    # calc total dist betweek upper and lower
-    totaldist = upperH - lowerH
-    #calc weighting
-    weight =  np.abs( ( (height) - lowerH) / (totaldist) )
-    #calc interpolated value    
-    outVal = ( belowVal * (1 - weight) ) + ( aboveVal * weight)
-    #outVal[above==0] = np.nan
-    return outVal
-
-## THIS FUNCTION NOT WORKING CORRECTLY ##        
-def interp_pres_lvls(preslvls,data,modelpreslvls): #function to interpolate data to given pressure levels
-    #set up dimensions of interpolated output data
-    #height_dim = np.shape(data)[0]
-    we_dim = np.shape(data)[1]
-    sn_dim = np.shape(data)[2]
-    
-    interpdata = np.zeros((len(preslvls),we_dim,sn_dim)) #array for new data
-
-    for i in range(we_dim): #loop to do interpolation
-        for j in range(sn_dim):
-            interpdata[:,i,j] = np.interp(preslvls,data[:,i,j],modelpreslvls[:,i,j])
         
-    return interpdata
-##    
-    
 def t2wind(): # plot t2 and wind barbs
     # create figure
     plt.figure(figsize=(8,8))
-    t2c = t2[time]-273.15 #convert temp to celcius
+    temps = t2[time] # temps in K
     if opt.tunit == 'F':        
-        t2f = (9./5. * t2c)+32 #convert celcius to fahrenheit
+        t2f = conv.k_to_f(temps) # convert to F
         clevs = np.arange(-30,115,5) # levels / degF
-        cs = m.contourf(x,y,t2f,clevs,cmap=cm2.get_cmap('gist_ncar'))
+        cs = m.contourf(x,y,t2f,clevs,cmap=cm.get_cmap('gist_ncar'))
     elif opt.tunit == 'C':
+        t2c = conv.k_to_c(temps) # convert to C
         clevs = np.arange(-40,55,5) # levels / degC
-        cs = m.contourf(x,y,t2c,clevs,cmap=cm2.get_cmap('gist_ncar'))
+        cs = m.contourf(x,y,t2c,clevs,cmap=cm.get_cmap('gist_ncar'))
         
     #make x and y grid points for barbs
     #yy = np.arange(0, len(y), 8)
@@ -452,8 +233,8 @@ def t2wind(): # plot t2 and wind barbs
     #x_th,y_th = m(xlong[0,::thin,::thin],xlat[0,::thin,::thin]) #another method to thin barbs
     
     #convert wind to kts        
-    u10kts = u10[time]*1.94384449
-    v10kts = v10[time]*1.94384449    
+    u10kts = conv.ms_to_kts(u10[time])
+    v10kts = conv.ms_to_kts(v10[time])    
     m.barbs(x[::thin,::thin], y[::thin,::thin], u10kts[::thin,::thin], v10kts[::thin,::thin],length=opt.barbsize) #plot barbs
     title = "2m Temperature and Wind Barbs (kts)" 
     ftitle = "t2-wind-"   
@@ -468,13 +249,11 @@ def mslponly(): # plot MSLP only
     #create figure
     plt.figure(figsize=(8,8))
     x, y = m(lons, lats)
-    psfchpa = psfc[time]*0.01 #convert Pa to hPa
-    #t2c = t2[time]-273.15 #convert temp to celcius      
-    mslp = psfchpa*(np.exp((g*thgt[0])/(R*t2[time]))) # calc MSLP
+    psfchpa = conv.pa_to_hpa(psfc[time]) #convert Pa to hPa     
+    mslp = calc.calc_mslp(psfchpa, thgt[0], t2[time]) # get mslp
     mslp = gaussian_filter(mslp, sigma=3) #smooth wiggles
     #find local min and local max
-    local_min, local_max = extrema(mslp, mode='wrap', window=50)
-    #mslp = psfchpa*np.exp((g*M*thgt[0])/(Rg*t2[time]))        
+    local_min, local_max = funcs.extrema(mslp, mode='wrap', window=50)       
     clevs = np.arange(900,1055,2.)        
     cs = m.contour(x,y,mslp,clevs,colors='k',linewidths=2.)
     plt.clabel(cs, inline=True, fmt='%1.0f', fontsize=12, colors='k')
@@ -518,9 +297,9 @@ def precipaccum(): # plot total precip accumulation
     elif opt.punit == 'in':
         clevs = [0.01, 0.1, 0.25, 0.50, 0.75, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, \
                 6.0, 8.0, 10., 20.0] # levels / in
-        ppn *= 0.0393701 # convert ppn to inches . comment out to have mm
+        ppn = conv.mm_to_in(ppn) # convert ppn to inches
     norm = matplotlib.colors.BoundaryNorm(clevs, 15) # set boundary of data by normalizing (0,1)
-    cs = m.contourf(x,y,ppn,clevs,norm=norm,cmap=precip_colormap) #plot total
+    cs = m.contourf(x,y,ppn,clevs,norm=norm,cmap=cmap.precip_colormap) #plot total
     title = "Precipitation Accumulation"
     ftitle = 'ppnaccum-'
     if opt.punit == 'mm':        
@@ -545,9 +324,9 @@ def precip(): # plot current precip at each time
     elif opt.punit == 'in':
         clevs = [0.01, 0.1, 0.25, 0.50, 0.75, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, \
                 6.0, 8.0, 10., 20.0] # levels / in
-        currppn *= 0.0393701 # convert ppn to inches . comment out to have mm
+        currppn = conv.mm_to_in(currppn) # convert ppn to inches
     norm = matplotlib.colors.BoundaryNorm(clevs, 15) # set boundary of data by normalizing (0,1)
-    cs = m.contourf(x,y,currppn,clevs,norm=norm,cmap=precip_colormap) #plot total
+    cs = m.contourf(x,y,currppn,clevs,norm=norm,cmap=cmap.precip_colormap) #plot total
     title = "Precipitation"
     ftitle = 'ppn-'
     if opt.punit == 'mm':        
@@ -572,9 +351,9 @@ def convprecip(): # plot current convective precip at each time
     elif opt.punit == 'in':
         clevs = [0.01, 0.1, 0.25, 0.50, 0.75, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, \
                 6.0, 8.0, 10., 20.0] # levels / in
-        currppn *= 0.0393701 # convert ppn to inches . comment out to have mm
+        currppn = conv.mm_to_in(currppn) # convert ppn to inches
     norm = matplotlib.colors.BoundaryNorm(clevs, 15) # set boundary of data by normalizing (0,1)
-    cs = m.contourf(x,y,currppn,clevs,norm=norm,cmap=precip_colormap) #plot total
+    cs = m.contourf(x,y,currppn,clevs,norm=norm,cmap=cmap.precip_colormap) #plot total
     title = "Convective Precipitation"
     ftitle = 'convppn-'
     if opt.punit == 'mm':        
@@ -587,45 +366,23 @@ def convprecip(): # plot current convective precip at each time
 def tdrh(): # plot td and rh
     # create figure
     plt.figure(figsize=(8,8))
-    q2 = nc.variables['Q2'] # water vapour mixing ratio at 2m
-    t2c = t2[time]-273.15 #convert temp to celcius
-    psfchpa = psfc[time]*0.01
-    #using equations from NOAA NWS page at http://www.srh.noaa.gov/epz/?n=wxcalc
-    #es = 6.11*10**((7.5*t2c)/(237.3+t2c)) #calculate saturation vapour pressure        
-    # from Rogers and Yau : A Short Course in Cloud Physics        
-    es = 6.112*np.exp(17.67*t2c/(t2c+243.5)) #saturation vapour pressure in hPa       
-    #es = 6.112*np.exp(17.67*(t2[time]-273.15)/(t2[time]-29.65))    
-    #from Wallace and Hobbs
-    #w = q2[time]/(1-q2[time]) # saturation mixing ratio
-    #print w
-    ws = 0.622*(es/(psfchpa-es)) #calc mixing ratio
-    #print ws
-    #print es
-    #rh = 100*(w/ws) #relative humidty
-    #e = (w*psfc[time]/(.622+w))/100
-    #e = es*(rh/100) #calc vapour pressure / Pa
-    #rh = (e/es)*100
-    #td = (243.5*np.log(e/6.112))/(17.67-np.log(e/6.112))
-    #td = np.log10(e/6.112) * (243.5/(17.67 - np.log10(e/6.112))) # calc Td another method using e **UNDERESTIMATES**
+    q2 = nc.variables['Q2'][time] # water vapour mixing ratio at 2m
+    t2c = conv.k_to_c(t2[time]) #convert temp to celcius
+    psfchpa = conv.pa_to_hpa(psfc[time]) # pres to hPa
+    es = calc.calc_es(t2c[time]) # calc es      
+    ws = calc.calc_ws(es, psfchpa) # calc ws
+
     if opt.rh:
-        rh = (q2[time]/ws)*100 #calc relative humidity
-        rh = np.where(rh > 100,100, rh) #remove values > 100
-        rh = np.where(rh < 0,0, rh) #remove values < 0 (just in case)        
+        rh = calc.calc_rh(q2, ws) #calc rh      
         clevs = np.arange(0,105,5)     
-        cs = m.contourf(x,y,rh,clevs,cmap=cm2.get_cmap('jet')) #plot RH
-        #print np.min(rh), np.max(rh)
-        #print np.max(ws)
+        cs = m.contourf(x,y,rh,clevs,cmap=cm.get_cmap('jet')) #plot RH
         cblabel='RH \ %'
         title = "Relative Humidity \n Valid: "
         ftitle = 'rh-'
         cbticks = True
-    elif opt.td: #more efficient to have it here instead of above (same as two funcs)
-        rh = (q2[time]/ws)*100 #calc relative humidity
-        rh = np.where(rh > 100,100, rh) #remove values > 100
-        rh = np.where(rh < 0,0, rh) #remove values < 0 (just in case) 
-        td1 = 237.3*np.log10( (es*rh) / 611) #calc numerator
-        td2 = 7.5*np.log10(10)-np.log10( (es*rh) / 611) #calc denominator
-        td = td1/td2 #calc Td . GOOD METHOD
+    elif opt.td:
+        rh = calc.calc_rh(q2, ws) # calc rh
+        td = calc.calc_dewpoint(es, rh) # calc td (deg C)
         title = "2m Dew Point"
         ftitle = 'td-'
         if opt.tunit == 'C':
@@ -633,35 +390,29 @@ def tdrh(): # plot td and rh
             cblabel = r'$\degree$C'
         elif opt.tunit == 'F':
             clevs = np.arange(-20,125,5) # levels / degF
-            td = (9./5. * td)+32 #convert celcius to fahrenheit
+            td = conv.c_to_f(td) #convert celcius to fahrenheit
             cblabel = r'$\degree$F'
-        cs = m.contourf(x,y,td,clevs,cmap=cm2.get_cmap('gist_ncar')) #plot Td
+        cs = m.contourf(x,y,td,clevs,cmap=cm.get_cmap('gist_ncar')) #plot Td
         cbticks=True
     
     makeplot(cs,title,cblabel,clevs,cbticks,ftitle)
     
 def upperair(): # plot upper air chart for given level. geopotential height, wind bards and temp
-    pb = nc.variables['PB'] #base state pressure, Pa
-    p = nc.variables['P'] # perturbation pressure, Pa
-    totalp = pb[time,:,:,:]+p[time,:,:,:] # total pressure in Pa
+    pb = nc.variables['PB'][time] #base state pressure, Pa
+    p = nc.variables['P'][time] # perturbation pressure, Pa
+    totalp = pb + p # total pressure in Pa
     U = nc.variables['U'][time] # U wind component
     V = nc.variables['V'][time] # V wind component
-    Unew = unstagger(U,'U') # unstagger u
-    Vnew = unstagger(V,'V') # unstagger v
-    ph = nc.variables['PH'] #perturbation geopotential
-    phb = nc.variables['PHB'] #base state geopotential
-    totalgp = phb[time,:,:,:]+ph[time,:,:,:] # total geopotential
-    totalgp = unstagger(totalgp,'Z') #total geopotential unstaggered
-    t = nc.variables['T'] #perturbation potential temperature (theta-t0)
-    t00 = nc.variables['T00'] #base state theta
-    #print t.shape, t00.shape
-    totalTheta = t[time,:,:,:]+t00[0] # total potential temp
-    totalTfac = ( (totalp*0.01) / 1000. )**(R/1004.) # factor to multiply theta by
-    totalT = (totalTheta*totalTfac)-273.15 # calc temp in deg C
-    #print totalT.shape
-    #print pb.shape, p.shape, totalp.shape
-    #print U.shape, V.shape, Unew.shape, Vnew.shape
-    #print totalgp.shape
+    Unew = funcs.unstagger(U,'U') # unstagger u
+    Vnew = funcs.unstagger(V,'V') # unstagger v
+    ph = nc.variables['PH'][time] #perturbation geopotential
+    phb = nc.variables['PHB'][time] #base state geopotential
+    totalgp = phb + ph # total geopotential
+    totalgp = funcs.unstagger(totalgp,'Z') #total geopotential unstaggered
+    theta = nc.variables['T'][time] #perturbation potential temperature (theta-t0)
+    theta0 = nc.variables['T00'][0] #base state theta
+    totalTheta = theta + theta0 # total potential temp
+    totalT = conv.k_to_c(calc.theta_to_temp(totalTheta, totalp)) # calc temps in C
     
     #pressure levels to interpolate to in Pa for interp_pres_lvls
     #preslvls = np.array([100000,95000,92500,90000,85000,80000,75000,70000,65000,60000,55000,50000,45000,40000,35000,30000,25000,20000,15000,10000,5000,1000])
@@ -676,13 +427,13 @@ def upperair(): # plot upper air chart for given level. geopotential height, win
         plt.figure(figsize=(8,8)) #create fig for each plot
         level = int(level) # make it int
         #interp data for level
-        gphgt = linear_interp(totalgp,totalp,level)
-        totalTfinal = linear_interp(totalT,totalp,level)
-        uinterp = linear_interp(Unew,totalp,level)
-        vinterp = linear_interp(Vnew,totalp,level) 
-        Ufinal = uinterp*1.94384449  #convert to kts
-        Vfinal = vinterp*1.94384449
-        gphgt = (gphgt/9.81) # convert to height (m)
+        gphgt = funcs.linear_interp(totalgp,totalp,level)
+        totalTfinal = funcs.linear_interp(totalT,totalp,level)
+        uinterp = funcs.linear_interp(Unew,totalp,level)
+        vinterp = funcs.linear_interp(Vnew,totalp,level) 
+        Ufinal = conv.ms_to_kts(uinterp) #convert to kts
+        Vfinal = conv.ms_to_kts(vinterp)
+        gphgt = conv.gphgt_to_hgt(gphgt) # convert to height (m)
         gphgt = gaussian_filter(gphgt, sigma=3) # smooth wiggles  
         totalTfinal = gaussian_filter(totalTfinal, sigma=2)
         # set gpheight levels for common pressure levels        
@@ -718,22 +469,22 @@ def surface(): # plot surface chart. t2, wind barbs and mslp
     # create figure
     plt.figure(figsize=(8,8))
     x, y = m(lons, lats)
-    t2c = t2[time]-273.15 #convert temp to celcius
+    t2c = conv.k_to_c(t2[time]) #convert temp to celcius
     if opt.tunit == 'F':
-        t2f = (9./5. * t2c)+32 #convert celcius to fahrenheit
+        t2f = conv.c_to_f(t2c) #convert celcius to fahrenheit
         clevs = np.arange(-30,115,5) # levels / degF
-        cs = m.contourf(x,y,t2f,clevs,cmap=cm2.get_cmap('gist_ncar'))
+        cs = m.contourf(x,y,t2f,clevs,cmap=cm.get_cmap('gist_ncar'))
         cblabel = r'$\degree$F'
     elif opt.tunit == 'C':
         clevs = np.arange(-40,55,5) # levels / degC
-        cs = m.contourf(x,y,t2c,clevs,cmap=cm2.get_cmap('gist_ncar'))
+        cs = m.contourf(x,y,t2c,clevs,cmap=cm.get_cmap('gist_ncar'))
         cblabel = r'$\degree$C'
     cbticks = True    
     
-    psfchpa = psfc[time]*0.01 #convert Pa to hPa
-    mslp = psfchpa*(np.exp((g*thgt[0])/(R*t2[time]))) # calc MSLP
+    psfchpa = conv.pa_to_hpa(psfc[time]) #convert Pa to hPa     
+    mslp = calc.calc_mslp(psfchpa, thgt[0], t2[time]) # get mslp
     mslp = gaussian_filter(mslp, sigma=3) # smooth wiggles
-    local_min, local_max = extrema(mslp, mode='wrap', window=50)
+    local_min, local_max = funcs.extrema(mslp, mode='wrap', window=50)
     #make x and y grid points for barbs
     #yy = np.arange(0, len(y), 8)
     #xx = np.arange(0, len(x), 8)
@@ -744,8 +495,8 @@ def surface(): # plot surface chart. t2, wind barbs and mslp
     #x_th,y_th = m(xlong[0,::thin,::thin],xlat[0,::thin,::thin]) #another method to thin barbs
         
     #convert wind to kts        
-    u10kts = u10[time]*1.94384449
-    v10kts = v10[time]*1.94384449      
+    u10kts = conv.ms_to_kts(u10[time])
+    v10kts = conv.ms_to_kts(v10[time]) 
     m.barbs(x[::thin,::thin], y[::thin,::thin], u10kts[::thin,::thin], v10kts[::thin,::thin],length=opt.barbsize) #plot barbs
     title = "2m Temp, Wind Barbs (kts), MSLP (hPa)"
     ftitle = 'sfc-'       
@@ -783,18 +534,17 @@ def surface(): # plot surface chart. t2, wind barbs and mslp
 def snowaccum(): # plot snow accumulation
     # create figure
     plt.figure(figsize=(8,8))
-    snowin = nc.variables['SNOWNC'] # total accumulated grid scale snow and ice / mm
-    snow = snowin[time] # snow accum in mm for each time
+    snow = nc.variables['SNOWNC'][time] # total accumulated grid scale snow and ice / mm at each time
     if opt.punit == 'mm':
         clevs = [0,0.5,1,2.5,3,4,5,8,10,15,20,30,40,50,80,100,150,200,250,500]
         cblabel = 'mm'
     elif opt.punit == 'in':
-        snow = snow*0.0393701 # convert to inches
+        snow = conv.mm_to_in(snow) # convert to inches
         clevs = [0.25,0.5,0.75,1,1.5,2,2.5,3,4,5,6,8,10,12,14,16,18,20,22,24]
         cblabel = 'inches'
     cbticks = True
     norm = matplotlib.colors.BoundaryNorm(clevs, 19) # set boundary of data by normalizing (0,1)    
-    cs = m.contourf(x,y,snow,clevs,norm=norm,cmap=snow_colormap)
+    cs = m.contourf(x,y,snow,clevs,norm=norm,cmap=cmap.snow_colormap)
     title = "Snow Accumulation"
     ftitle = 'snow-'
 
@@ -803,37 +553,28 @@ def snowaccum(): # plot snow accumulation
 def hailaccum(): # plot hail accumulation
     # create figure
     plt.figure(figsize=(8,8))
-    hailin = nc.variables['HAILNC'] # accimulated total grid scale hail / mm
-    hail = hailin[time] #hail accum at each time
+    hail = nc.variables['HAILNC'][time] # accimulated total grid scale hail / mm at each time
     if opt.punit == 'mm':
         clevs = [0.5,1.,1.5,2.,2.5,3.,4.,5.,6.,7.,8.,9.,10.,11.,12.]
         cblabel = 'mm'
     elif opt.punit == 'in':
-        hail = hail*0.0393701 # convert to inches
+        hail = conv.mm_to_in(hail) # convert to inches
         clevs = [0.01,0.02,0.04,0.06,0.08,0.1,0.15,0.2,0.25,0.3,0.35,0.4,0.45,0.5,0.55]
         cblabel = 'inches'
     cbticks = True
     norm = matplotlib.colors.BoundaryNorm(clevs, 14) # set boundary of data by normalizing (0,1)    
-    cs = m.contourf(x,y,hail,clevs,norm=norm,cmap=hail_colormap)
+    cs = m.contourf(x,y,hail,clevs,norm=norm,cmap=cmap.hail_colormap)
     title = "Hail Accumulation"
     ftitle = 'hail-'
 
     makeplot(cs,title,cblabel,clevs,cbticks,ftitle)
     
-    ####
-    # Reference for simulated and composite reflectivity:   
-    # Koch, S., Ferrier, B., Stoelinga, M., Szoke, E., Weiss, S., Kain, J., 2005:
-    # THE USE OF SIMULATED RADAR REFLECTIVITY FIELDS IN THE DIAGNOSIS OF
-    # MESOSCALE PHENOMENA FROM HIGH-RESOLUTION WRF MODEL FORECASTS
-    # J4J.7
-    ####
 def simudbz(): # plot simulated reflectivity, mp_physics dependent
     # create figure
     plt.figure(figsize=(8,8))
     qrain = nc.variables['QRAIN'] # rain water mixing ratio
-    t2c = t2[time]-273.15 #convert temp to celcius
-    rhoa = ( psfc[time] / (R*t2[time]) ) # density of air
-    N0snow = 2.0e6*np.exp(-0.12*t2c) # N0 for snow (intercept parameter)
+    t2c = conv.k_to_c(t2[time]) #convert temp to celcius
+    rhoa = calc.calc_rhoa(psfc[time], t2[time])
     Qrain = qrain[time,1] # rain mixing ratio
     Qrain = np.nan_to_num(Qrain) # change NaN to zeroes, changge infs to nums
     try: #depends on MP scheme
@@ -842,20 +583,10 @@ def simudbz(): # plot simulated reflectivity, mp_physics dependent
         Qsn = np.zeros(np.shape(qrain)) # else create zeros array same shape as qrain
     Qsnow = Qsn[time,1] # snow mixing ratio
     Qsnow = np.nan_to_num(Qsnow) # change NaN to zeros
-    # using these seems tidier for these calcs
-    lambr = np.divide((np.pi*N0rain*rhol), np.multiply(rhoa,Qrain))**0.25 # rain lambda slope factor
-    lambs = np.exp(-0.0536*t2c) # snow lambda slope factor
-    Zer = ( (720.0*N0rain)*(lambr**-7.0) )*1e18 # rain equivalent reflectivity factor
-    Zes_int = np.divide((lambs*Qsnow*rhoa), N0snow)
-    Zes = ( (0.224*720.*1e18) / (np.pi*rhol)**2 )*(Zes_int**2) # snow equivalent reflectivity factor
-    Ze = np.add(Zer,Zes) # total reflectivity factor
-    dBZ = 10*np.log10(Ze) # compare apples to apples / convert Ze to dBZ
-    dBZ = np.nan_to_num(dBZ) # get rid of NaN's to zeros
-    #Zeraindbz = 10*np.log10(Zerain)
-    #Zeraindbz = np.nan_to_num(Zeraindbz)
+    dBZ = calc.calc_dbz(t2c, rhoa, Qrain, Qsnow)
     clevs = np.arange(0,85,5)
     norm = matplotlib.colors.BoundaryNorm(clevs, 17) # normalize levels
-    cs = m.contourf(x,y,dBZ,clevs,norm=norm,cmap=dbz_colormap)
+    cs = m.contourf(x,y,dBZ,clevs,norm=norm,cmap=cmap.dbz_colormap)
     title = "Simulated Reflectivity"
     ftitle = 'simdbz-'
     cblabel = 'dBZ'
@@ -873,30 +604,20 @@ def compodbz(): # plot composite reflectivity, mp_physics dependent
          #   for j in range(len(refl[1,1,:])):
           #      dBZ[i,j]=np.max(refl[:,i,j])
     except: # calculate reflectivity
-        qrain = nc.variables['QRAIN'] # rain water mixing ratio
-        Qrainall = qrain[time] # get all Qrain values at all levels for each time
-        t2c = t2[time]-273.15 #convert temp to celcius
-        rhoa = ( psfc[time] / (R*t2[time]) ) # density of air
-        N0snow = 2.0e6*np.exp(-0.12*t2c) # N0 for snow (intercept parameter)
+        Qrainall = nc.variables['QRAIN'][time] # rain water mixing ratio at all levels
+        t2c = conv.k_to_c(t2[time]) #convert temp to celcius
+        rhoa = calc.calc_rhoa(psfc[time], t2[time])
         try: # depends on MP scheme
             Qsn = nc.variables['QSNOW'] # try to get snow mixing ratio
         except:
-            Qsn = np.zeros(np.shape(qrain)) # else create zeros array same shape as qrain
+            Qsn = np.zeros(np.shape(Qrainall)) # else create zeros array same shape as qrain
         Qsnowall = Qsn[time] # get all Qsnow values at all levels for each time
-        # using these seems tidier for these calcs
         Qrainmax = np.max(Qrainall, axis=0) #max rain QV
         Qsnowmax = np.max(Qsnowall, axis=0) #max snow QV
-        lambr = np.divide((np.pi*N0rain*rhol), np.multiply(rhoa,Qrainmax))** 0.25 # rain lambda slope factor
-        lambs = np.exp(-0.0536 * t2c) # snow lambda slope factor
-        Zer = ( (720.0*N0rain)*(lambr ** -7.0) ) * 1e18 # rain equivalent reflectivity factor
-        Zes_int = np.divide((lambs * Qsnowmax * rhoa), N0snow)
-        Zes = ( (0.224 * 720. * 1e18) / (np.pi * rhol) ** 2 ) * (Zes_int **2) # snow equivalent reflectivity factor
-        Ze = np.add(Zer,Zes) # total reflectivity factor
-        dBZ = 10.0*np.log10(Ze) # compare apples to apples / convert Ze to dBZ
-        dBZ = np.nan_to_num(dBZ) # get rid of NaN's to zeros
+        dBZ = calc.calc_dbz(t2c, rhoa, Qrainmax, Qsnowmax)
     clevs = np.arange(0,85,5)
     norm = matplotlib.colors.BoundaryNorm(clevs, 17) # normalize levels
-    cs = m.contourf(x,y,dBZ,clevs,norm=norm,cmap=dbz_colormap)
+    cs = m.contourf(x,y,dBZ,clevs,norm=norm,cmap=cmap.dbz_colormap)
     title = "Composite Reflectivity"
     ftitle = 'compdbz-'
     cblabel = 'dBZ'
@@ -906,34 +627,16 @@ def compodbz(): # plot composite reflectivity, mp_physics dependent
 def lclhgt(): # plot lcl height
     # create figure
     plt.figure(figsize=(8,8))
-    q2 = nc.variables['Q2'] # water vapour mixing ratio at 2m
-    t2c = t2[time]-273.15 #convert temp to celcius
-    psfchpa = psfc[time]*0.01
-    #using equations from NOAA NWS page at http://www.srh.noaa.gov/epz/?n=wxcalc
-    #es = 6.11*10**((7.5*t2c)/(237.3+t2c)) #calculate saturation vapour pressure        
-    # from Rogers and Yau : A Short Course in Cloud Physics        
-    es = 6.112*np.exp(17.67*t2c/(t2c+243.5)) #saturation vapour pressure in hPa       
-    #from Wallace and Hobbs
-    #w = q2[time]/(1-q2[time]) # saturation mixing ratio
-    #print w
-    ws = 0.622*(es/(psfchpa-es)) #calc mixing ratio
-    #print ws
-    #print es
-    #rh = 100*(w/ws) #relative humidty
-    #e = es*(rh/100) #calc vapour pressure / Pa
-    rh = (q2[time]/ws)*100. #calc relative humidity
-    rh = np.where(rh > 100.,100., rh) #remove values > 100
-    rh = np.where(rh < 0,0, rh) #remove values < 0 (just in case)
-    #td = np.log10(e/6.112)*(243.5/(17.67-np.log10(e/6.112))) # calc Td another method using e UNDERESTIMATES
-    td1 = 237.3*np.log10((es*rh)/611.) #calc numerator
-    td2 = 7.5*np.log10(10.)-np.log10( (es*rh) / 611. ) #calc denominator
-    td = td1/td2 #calc Td . GOOD METHOD
-    lcl = 125.*(t2c-td) # calc lcl
-    lcl = np.where(lcl < 0, 0, lcl)    
-    #print np.min(lcl), np.max(lcl)
-    lcl = np.nan_to_num(lcl) # get rid of NaNs
+    q2 = nc.variables['Q2'][time] # water vapour mixing ratio at 2m
+    t2c = conv.k_to_c(t2[time]) #convert temp to celcius
+    psfchpa = conv.pa_to_hpa(psfc[time])
+    es = calc.calc_es(t2c)
+    ws = calc.calc_ws(es, psfchpa)
+    rh = calc.calc_rh(q2, ws)
+    td = calc.calc_dewpoint(es, rh)
+    lcl = calc.calc_lcl(t2c, td)
     clevs = np.arange(0,6000,500)
-    cs = m.contourf(x,y,lcl,clevs,cmap=lcl_colormap)
+    cs = m.contourf(x,y,lcl,clevs,cmap=cmap.lcl_colormap)
     title = "LCL Height"
     ftitle = 'lcl-'
     cblabel = 'm'
@@ -943,49 +646,39 @@ def lclhgt(): # plot lcl height
 def thetaE(): # plot theta-e
     # create figure
     plt.figure(figsize=(8,8))
-    t = nc.variables['T'] #perturbation potential temperature (theta-t0)
-    t00 = nc.variables['T00'] #base state theta
-    psfchpa = psfc[time]*0.01
-    t2c = t2[time]-273.15 #convert temp to celcius
-    theta = t[time,0]+t00[0] # total theta
-    #es = 6.112*np.exp((17.27*(t2[time]-273.16))/(t2[time]-35.86))
-    es = 6.112*np.exp( 17.67*t2c / (t2c+243.5) ) #saturation vapour pressure in hPa       
-    ws = 0.622*(es/(psfchpa-es)) # water vapour mixing ratio
-    # Version from Wallace and Hobbs
-    thetae = theta*np.exp( (Lv*ws) / (1004.*t2[time]) ) # calc equivalent potential temperature
-    #Simplified version from Stull
-    #thetae = (t2[time]+(Lv/Cpd)*q2[time])*(1000/psfchpa)**(R/Cpd)
+    theta = nc.variables['T'][time] #perturbation potential temperature (theta-t0)
+    theta0 = nc.variables['T00'][0] #base state theta
+    theta = theta[0] + theta0 # total theta
+    psfchpa = conv.pa_to_hpa(psfc[time])
+    t2c = conv.k_to_c(t2[time]) #convert temp to celcius
+    es = calc.calc_es(t2c)
+    ws = calc.calc_ws(es, psfchpa)     
+    thetae = calc.calc_thetae(theta, t2[time], ws)
     clevs = np.arange(260,372,4) # set by max and min of data    
-    cs = m.contourf(x,y,thetae,clevs,cmap=cm2.get_cmap('gist_ncar'))
+    cs = m.contourf(x,y,thetae,clevs,cmap=cm.get_cmap('gist_ncar'))
     title = "Theta-e"
     ftitle = 'thetae-'
     cblabel = 'K'
     cbticks = True
-    
     makeplot(cs,title,cblabel,clevs,cbticks,ftitle)
     
 def h75lr(): # 700-500mb lapse rates
     # create figure
     plt.figure(figsize=(8,8))
-    pb = nc.variables['PB'] #base state pressure, Pa
-    p = nc.variables['P'] # perturbation pressure, Pa
-    totalp = pb[time,:,:,:]+p[time,:,:,:] # total pressure in Pa
-    t = nc.variables['T'] #perturbation potential temperature (theta-t0)
-    t00 = nc.variables['T00'] #base state theta
-    #print t.shape, t00.shape
-    totalTheta = t[time,:,:,:]+t00[0] # total potential temp
-    totalTfac = ( (totalp*0.01) / 1000. )**(R/1004.) # factor to multiply theta by
-    totalT=(totalTheta*totalTfac)-273.15 # calc temp in deg C
+    pb = nc.variables['PB'][time] #base state pressure, Pa
+    p = nc.variables['P'][time] # perturbation pressure, Pa
+    totalp = pb + p # total pressure in Pa
+    theta = nc.variables['T'][time] #perturbation potential temperature (theta-t0)
+    theta0 = nc.variables['T00'][0] #base state theta
+    totalTheta = theta + theta0 # total potential temp
+    totalT= conv.k_to_c(calc.theta_to_temp(totalTheta, totalp)) # calc temp in deg C
     # interp temps to levels
-    totalT700 = linear_interp(totalT,totalp,700)
-    totalT500 = linear_interp(totalT,totalp,500)
+    totalT700 = funcs.linear_interp(totalT,totalp,700)
+    totalT500 = funcs.linear_interp(totalT,totalp,500)
     # calc h7-h5 lapse rates
     lr = totalT700 - totalT500
-    #print np.min(lr), np.max(lr)
-    #lr = np.round(lr, decimals=2) #round off
-    
     clevs = np.arange(5,10.5,.5) # conditionally unstable levels
-    cs = m.contourf(x,y,lr,clevs,cmap=cm2.get_cmap('gist_ncar'))
+    cs = m.contourf(x,y,lr,clevs,cmap=cm.get_cmap('gist_ncar'))
     title = "H7-H5 Lapse Rates"
     ftitle = 'h75lr-'
     cblabel = r'$\degree$C'
@@ -995,49 +688,44 @@ def h75lr(): # 700-500mb lapse rates
 def absvort500(): # plot 500mb absolute vorticity
     # create figure
     plt.figure(figsize=(8,8))
-    pb = nc.variables['PB'] #base state pressure, Pa
-    p = nc.variables['P'] # perturbation pressure, Pa
-    totalp = pb[time,:,:,:]+p[time,:,:,:] # total pressure in Pa
-    U = nc.variables['U'][time] # U wind component
-    V = nc.variables['V'][time] # V wind component
-    Unew = unstagger(U,'U') # unstagger u
-    Vnew = unstagger(V,'V') # unstagger v
-    fcoriolis = 2 * ( 2*np.pi/86400 ) * np.sin( xlat[0]*(np.pi/180.) ) # calc coriolis term
-    uinterp = linear_interp(Unew,totalp,500) #interp to 500mb
-    vinterp = linear_interp(Vnew,totalp,500) 
-    dvdx = np.gradient(vinterp,dx,dx)[1] # calc dvdx
-    dudy = np.gradient(uinterp,dx,dx)[0] # calc dudy
-    avort = dvdx - dudy + fcoriolis # absolute vorticity 
+    pb = nc.variables['PB'][time] #base state pressure, Pa
+    p = nc.variables['P'][time] # perturbation pressure, Pa
+    totalp = pb + p # total pressure in Pa
+    U = funcs.unstagger(nc.variables['U'][time],'U') # U wind component UNSTAGGERED
+    V = funcs.unstagger(nc.variables['V'][time],'V') # V wind component
+    fcoriolis = calc.calc_fcoriolis(xlat[0])
+    uinterp = funcs.linear_interp(U,totalp,500) #interp to 500mb
+    vinterp = funcs.linear_interp(V,totalp,500) 
+    vertvort = calc.calc_vertvort(uinterp, vinterp, dx)
+    avort = vertvort + fcoriolis # absolute vorticity 
     avort = np.multiply(avort, 1e5) # scale up for levels
     clevs = np.arange(-6, 52, 2)    
-    cs = m.contourf(x,y,avort,clevs,cmap=cm2.get_cmap('gist_ncar'))
+    cs = m.contourf(x,y,avort,clevs,cmap=cm.get_cmap('gist_ncar'))
     title = '500mb Absolute Vorticity'
     ftitle = '500absvort-' 
     cblabel = r'$10^{-5} s^{-1}$'
     cbticks = True
     makeplot(cs,title,cblabel,clevs,cbticks,ftitle)
     
-def shr06(): # plot the 0-6km shear vector
+def shr06(): # plot the 0-6km shear vector NNED TO FIX INTERP AS SHR IS COMING OUT WRONG
     # create figure
     plt.figure(figsize=(8,8))
-    ph = nc.variables['PH'] #perturbation geopotential
-    phb = nc.variables['PHB'] #base state geopotential
-    totalgp = phb[time,:,:,:]+ph[time,:,:,:] # total geopotential
-    totalgp = unstagger(totalgp,'Z') #total geopotential unstaggered
-    U = nc.variables['U'][time] # U wind component
-    V = nc.variables['V'][time] # V wind component
-    Unew = unstagger(U,'U') # unstagger u
-    Vnew = unstagger(V,'V') # unstagger v
+    ph = nc.variables['PH'][time] #perturbation geopotential
+    phb = nc.variables['PHB'][time] #base state geopotential
+    totalgp = phb + ph # total geopotential
+    totalgp = funcs.unstagger(totalgp,'Z') #total geopotential unstaggered
+    U = funcs.unstagger(nc.variables['U'][time],'U') # U wind component # UNSTAGGERED
+    V = funcs.unstagger(nc.variables['V'][time],'V') # V wind component
     #u10kts = u10[time]*1.94384449 # sfc wind in kts
     #v10kts = v10[time]*1.94384449 
-    u6 = linear_interp_height(Unew, totalgp, 6000) # interpolate u to 6km
-    v6 = linear_interp_height(Vnew, totalgp, 6000) # interpolate v to 6km
-    u6kts = u6 * 1.94384449 # convert 6km to kts
-    v6kts = v6 * 1.94384449
-    u0 = linear_interp_height(Unew, totalgp, 0) # interpolate to 0m
-    v0 = linear_interp_height(Vnew, totalgp, 0)
-    u0kts = u0 * 1.94384449 # convert 0m wind to kts
-    v0kts = v0 * 1.94384449
+    u6 = funcs.linear_interp_height(U, totalgp, 6000) # interpolate u to 6km
+    v6 = funcs.linear_interp_height(V, totalgp, 6000) # interpolate v to 6km
+    u6kts = conv.ms_to_kts(u6) # convert 6km wind to kts
+    v6kts = conv.ms_to_kts(v6)
+    u0 = funcs.linear_interp_height(U, totalgp, 0) # interpolate to 0m
+    v0 = funcs.linear_interp_height(V, totalgp, 0)
+    u0kts = conv.ms_to_kts(u0) # convert 0m wind to kts
+    v0kts = conv.ms_to_kts(v0)
     ushr = u6kts - u0kts # calc 0-6 shr in kts
     vshr = v6kts - v0kts
     # plot data
@@ -1050,35 +738,21 @@ def shr06(): # plot the 0-6km shear vector
     makeplot(cs,title,cblabel,clevs,cbticks,ftitle)
     
 def vertvol(): # plot the vertical velocity at levels. NEEDS CORRECTING TO VERTICAL MOTION OMEGA EQUATION
-    W = nc.variables['W'][time] # vertical velocity
-    Wnew = unstagger(W,'W') # unstagger W
-    pb = nc.variables['PB'] #base state pressure, Pa
-    p = nc.variables['P'] # perturbation pressure, Pa
-    totalp = pb[time,:,:,:]+p[time,:,:,:] # total pressure in Pa
-    #t = nc.variables['T'] #perturbation potential temperature (theta-t0)
-    #t00 = nc.variables['T00'] #base state theta
-    #print t.shape, t00.shape
-    #totalTheta = t[time,:,:,:]+t00[0] # total potential temp
-    #totalTfac = ( (totalp*0.01) / 1000. )**(R/1004.) # factor to multiply theta by
-    #totalT=(totalTheta*totalTfac) # calc temp in K
+    W = funcs.unstagger(nc.variables['W'][time],'W') # unstaggered vertical velocity
+    pb = nc.variables['PB'][time] #base state pressure, Pa
+    p = nc.variables['P'][time] # perturbation pressure, Pa
+    totalp = pb + p # total pressure in Pa
     
     levels = opt.lvl.split(',') # get list of levels
     for level in levels: 
         plt.figure(figsize=(8,8)) #create fig for each plot
         level = int(level) # make it int
-        Wfinal = linear_interp(Wnew,totalp,level) # interpolate W to levels
-        print np.min(Wfinal), np.max(Wfinal)
-        #totalTfinal = linear_interp(totalT,totalp,level) # interp temp to levels
-        #rhoa = ( level*100. / (R*totalTfinal) ) # density of air
-        #vertvol = (- Wfinal * rhoa * g) * 0.1 # calc vert vol and convert to microbar / s
-        #print np.max(vertvol), np.min(vertvol)
-        #clevs = np.arange(-12, 51 ,3)
+        Wfinal = funcs.linear_interp(W,totalp,level) # interpolate W to levels
         clevs = np.arange(-2.0,2.2,0.2)        
-        cs = m.contourf(x,y,Wfinal,clevs,cmap=cm2.get_cmap('gist_ncar'))
+        cs = m.contourf(x,y,Wfinal,clevs,cmap=cm.get_cmap('gist_ncar'))
         level = str(level)
         title = level+'mb Vertical Velocity'
         ftitle = level+'mbvv-' 
-        #cblabel = r'$-\mu bs^{-1}$'
         cblabel = r'$ms^{-1}$'
         cbticks = True
         makeplot(cs,title,cblabel,clevs,cbticks,ftitle)
@@ -1088,7 +762,7 @@ def olr_to_temp(): # convert OLR to IR temp
     olr = nc.variables['OLR'][time]
     olrtemp = np.power(olr / 5.67e-8, 0.25) - 273.15 # calc temp using Stefan-Boltzman law and convert to deg C
     clevs = np.arange(-80, 36 ,4)
-    cs = m.contourf(x,y,olrtemp,clevs,cmap=irsat_colormap)
+    cs = m.contourf(x,y,olrtemp,clevs,cmap=cmap.irsat_colormap)
     title = 'IR Brightness Temp'
     ftitle = 'irtemp-' 
     cblabel = r'$\degree$C'
@@ -1103,14 +777,46 @@ def pymeteo_skewt(): # uses pyMeteo package (https://github.com/cwebster2/pyMete
         print "LAT/LON NOT IN DOMAIN. QUITTING"
         sys.exit()
         
-#### END FUNCTIONS ####
+def plot_skewt(): # plot skew-t by writing data to file and use SHARPpy available at: https://github.com/sharppy/SHARPpy
+    i, j = funcs.latlon_ij(opt.slat, opt.slon, xlat, xlong)
+    inlat = xlat[0,i,j]
+    inlon = xlong[0,i,j]
+    pb = nc.variables['PB'][time,:,i,j] #base state pressure, Pa
+    p = nc.variables['P'][time,:,i,j] # perturbation pressure, Pa
+    totalp = p + pb # total pressure
+    ph = nc.variables['PH'][time,:,i,j] #perturbation geopotential
+    phb = nc.variables['PHB'][time,:,i,j] #base state geopotential
+    totalgp = phb + ph # total geopotential
+    totalgp = funcs.unstagger(totalgp,'Z') #total geopotential unstaggered
+    U = nc.variables['U'][time,:,i,j] # U wind component
+    V = nc.variables['V'][time,:,i,j] # V wind component
+    theta = nc.variables['T'][time,:,i,j] #perturbation potential temperature (theta-t0)
+    theta0 = nc.variables['T00'][0] #base state theta
+    totaltheta = theta+theta0 # total potential temp
+    qvapor = nc.variables['QVAPOR'][time,:,i,j] #water vapor mixing ratio kg/kg
+    #need to calc these variables for skewt
+    level = conv.pa_to_hpa(totalp) # levels in hPa
+    height = conv.gphgt_to_hgt(totalgp) # heights in m
+    temps = calc.theta_to_temp(totaltheta, totalp) # temps in degK
+    tempc = conv.k_to_c(temps) # temps in degC
+    es = calc.calc_es(tempc) # calc es
+    ws = calc.calc_ws(es, level) # calc ws
+    rh = calc.calc_rh(qvapor, ws) # calc rh
+    dwpt = calc.calc_dewpoint(es, rh) # calc dewpoint in degC
+    winddir = calc.calc_wdir(U, V) # calc wind dir
+    wspd = conv.ms_to_kts(calc.calc_wspeed(U, V)) # calc wind spd
+    skewt_data = funcs.skewt_data(timestamp, level, height, tempc, dwpt, winddir, wspd, inlat, inlon) # write the data to SPC file format
+    pltfuncs.do_sharppy(skewt_data) # use SHARPpy to plot skew-t
+    
+### END PLOT FUNCTIONS ###
 flag = False # to check for plotting options
 #### BEGIN TIME LOOP ####    
 for time in range(times.shape[0]):
     currtime = str(''.join(times[time])).replace('_', ' ') #get current model time    
     filetime = currtime.translate(None, ':').replace(' ', '_') # time for filename
-    alltimes.append(currtime) # all times in output    
-
+    alltimes.append(currtime) # all times in output 
+    timestamp = currtime[8:10]+currtime[5:7]+currtime[2:4]+'/'+currtime[11:13]+currtime[14:16]
+    
     if opt.t2: #plot 2m temp and wind barbs
         print "Plotting Temperature and Wind Barbs for time: ", currtime       
         t2wind()
@@ -1209,8 +915,21 @@ for time in range(times.shape[0]):
         flag = True
         
     if opt.skewt:
-        print "Plotting Skew-T for time: ", currtime
+        print "Plotting Skew-t for time: ", currtime
         pymeteo_skewt()
+        flag = True
+        
+    if opt.getij:
+        print "Getting i, j for lat=",opt.slat, ', lon=',opt.slon
+        funcs.latlon_ij(opt.slat, opt.slon, xlat, xlong)
+        #print "A less accurate method:"
+        #funcs.latlon_ij2(opt.slat, opt.slon, xlat, xlong)
+        flag = True
+        sys.exit()
+        
+    if opt.skewt2:
+        print "Plotting Skew-t for time: ", currtime
+        plot_skewt()
         flag = True
         
     if flag is False: # do this when no options given

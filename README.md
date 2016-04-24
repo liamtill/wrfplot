@@ -25,7 +25,7 @@ Python script to plot various WRF-ARW output. Written for Python 2.x
 - Vertical Velocity
 - IR Temp
 - Skew-t Plots (Uses pyMeteo package)
-- Skew-t Plots using SHARPpy
+- Skew-t Plots using SHARPpy (Currently testing stage)
 
 Also supports saving plots as PNG images.
 

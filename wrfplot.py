@@ -846,8 +846,8 @@ def updraft_hel(): # plot the 2-5km updraft helicity
         #u5km[i] = funcs.interp_generic(5000+increment, heights, U)
         #v5km[i] = funcs.interp_generic(5000+increment, heights, V)
         w2km[i] = funcs.interp_generic(2000+increment, heights, W)
-        w3km[i] = funcs.interp_generic(2000+increment, heights, W)
-        w4km[i] = funcs.interp_generic(2000+increment, heights, W)
+        w3km[i] = funcs.interp_generic(3000+increment, heights, W)
+        w4km[i] = funcs.interp_generic(4000+increment, heights, W)
         #w5km[i] = funcs.interp_generic(2000+increment, heights, W)
         zeta2km[i] = calc.calc_vertvort(u2km[i], v2km[i], dx)
         zeta3km[i] = calc.calc_vertvort(u3km[i], v3km[i], dx)
@@ -862,7 +862,6 @@ def updraft_hel(): # plot the 2-5km updraft helicity
     zeta4to5 = np.mean(zeta4km, axis=0)
     # calc the 2-5km UH
     UH = ( w2to3*zeta2to3 + w3to4*zeta3to4 + w4to5*zeta4to5 ) * 1000
-    UH = funcs.nine_point_smooth(UH)
     #u2km = funcs.interp_generic(2000, heights, U)
     #v2km = funcs.interp_generic(2000, heights, V)
     #u3km = funcs.interp_generic(3000, heights, U)
@@ -887,7 +886,7 @@ def updraft_hel(): # plot the 2-5km updraft helicity
     #zeta4to5 = 0.5 * ( zeta4km + zeta5km )
     #UH = ( w2to3*zeta2to3 + w3to4*zeta3to4 + w4to5*zeta4to5 ) * 1000
     clevs = np.arange(0,210,10) 
-    cs = m.contourf(x,y,UH,cmap=cmap.uh_colormap)
+    cs = m.contourf(x,y,UH,clevs,cmap=cmap.uh_colormap)
     title = '2-5km Updraft Helicity'
     ftitle = 'uh-' 
     cblabel = r'$m^{2}s^{-2}$'

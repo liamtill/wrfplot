@@ -277,11 +277,3 @@ def interp_generic(level, coords, data):
             f = interp1d(coords[:,i,j], data[:,i,j], kind='linear', fill_value=np.nan, bounds_error=False, assume_sorted=False)
             out[i,j] = f(level) # do interpolation
     return out
-    
-def nine_point_smooth(data, p=0.50, q=-0.25):
-    """
-    
-    """
-    smoothed_data = data[1:-1,1:-1] + ( p / 4. ) * ( data[:-1,1:-1] + data[1:-1,1:] + data[1:,1:-1] + data[1:-1,:-1] - ( 4 * data[1:-1,1:-1] ) \
-                  + ( q / 4. ) * ( data[:-1,1:-1] + data[:-1,1:-1] + data[1:,1:-1] + data[1:,1:-1] - (4 * data[1:-1,1:-1]) ) )
-    return smoothed_data

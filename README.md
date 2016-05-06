@@ -26,6 +26,7 @@ Python script to plot various WRF-ARW output. Written for Python 2.x
 - IR Temp
 - Skew-t Plots (Uses pyMeteo package)
 - Skew-t Plots using SHARPpy (Currently testing stage)
+- 2-5km Updraft Helicity (Testing)
 
 Also supports saving plots as PNG images.
 
@@ -43,8 +44,6 @@ Use wrfplot.py --help to see all possible options.
 # Known Issues
 
 - Simulated and Composite Reflectivity calculations used are for Ferrier, WSM5, fixed intercept microphysics. Plots seem to work.
-- Contour/Color bar levels for various parameters need revising
 - Need to fix vertical velocity calculation to use vertical motion omega equation (microbars/s) and not vertical velocity
-- 0-6 SHR plots incorrect due to error in linear_interp_height function
 
 Feel free to use and modify this script but please give credit when used. 

@@ -9,7 +9,7 @@ Python script to plot various WRF model output. Plots are saved as PNG.
 example usage: wrfplot.py --infile filename.nc --sfc --tunit C --ppn -punit mm --td
 Will plot surface chart and dewpoint in Celcius and precipitation in mm.
 Use wrfplot.py --help to list all options
-Last modified: 23/04/16
+Last modified: 05/05/16
 
 Skew-T plotting with the pyMeteo package available at: https://github.com/cwebster2/pyMeteo
 Credit to Casey Webster
@@ -77,6 +77,7 @@ parser.add_option("--slat", dest="slat", type="int", help="Latitude for Skew-t")
 parser.add_option("--slon", dest="slon", type="int", help="Longitude for Skew-t")
 parser.add_option("--getij", dest="getij", action="store_true", help="Get i,j and nearest Lat/Lon for entered Lat/Lon")
 parser.add_option("--skewt2", dest="skewt2", action="store_true", help="Plot Skew-t for a location using SHARPpy")
+parser.add_option("--uh25", dest="uh25", action="store_true", help="Plot 2-5km Updraft Helicity")
 (opt, arg) = parser.parse_args()
 
 indir = opt.indir # dir of input file
@@ -371,6 +372,8 @@ def tdrh(): # plot td and rh
     psfchpa = conv.pa_to_hpa(psfc[time]) # pres to hPa
     es = calc.calc_es(t2c[time]) # calc es      
     ws = calc.calc_ws(es, psfchpa) # calc ws
+    u10kts = conv.ms_to_kts(u10[time])
+    v10kts = conv.ms_to_kts(v10[time])
 
     if opt.rh:
         rh = calc.calc_rh(q2, ws) #calc rh      
@@ -393,6 +396,7 @@ def tdrh(): # plot td and rh
             td = conv.c_to_f(td) #convert celcius to fahrenheit
             cblabel = r'$\degree$F'
         cs = m.contourf(x,y,td,clevs,cmap=cm.get_cmap('gist_ncar')) #plot Td
+        m.barbs(x[::thin,::thin], y[::thin,::thin], u10kts[::thin,::thin], v10kts[::thin,::thin],length=opt.barbsize) #plot barbs
         cbticks=True
     
     makeplot(cs,title,cblabel,clevs,cbticks,ftitle)
@@ -414,25 +418,18 @@ def upperair(): # plot upper air chart for given level. geopotential height, win
     totalTheta = theta + theta0 # total potential temp
     totalT = conv.k_to_c(calc.theta_to_temp(totalTheta, totalp)) # calc temps in C
     
-    #pressure levels to interpolate to in Pa for interp_pres_lvls
-    #preslvls = np.array([100000,95000,92500,90000,85000,80000,75000,70000,65000,60000,55000,50000,45000,40000,35000,30000,25000,20000,15000,10000,5000,1000])
-    #preslvls = np.array([1000,5000,10000,15000,20000,25000,30000,35000,40000,45000,50000,55000,60000,65000,70000,75000,80000,85000,90000,92500,95000,100000])
-    
-    # interpolate using np.interp 
-    #gphgt = interp_pres_lvls(preslvls,totalgp,totalp) 
-    #totalTfinal = interp_pres_lvls(preslvls,totalp,totalT)
-    
     levels = opt.lvl.split(',') # get list of levels
     for level in levels: 
         plt.figure(figsize=(8,8)) #create fig for each plot
         level = int(level) # make it int
         #interp data for level
         gphgt = funcs.linear_interp(totalgp,totalp,level)
-        totalTfinal = funcs.linear_interp(totalT,totalp,level)
+        totalTfinal = funcs.linear_interp(totalT,totalp,level)     
         uinterp = funcs.linear_interp(Unew,totalp,level)
         vinterp = funcs.linear_interp(Vnew,totalp,level) 
         Ufinal = conv.ms_to_kts(uinterp) #convert to kts
         Vfinal = conv.ms_to_kts(vinterp)
+        #speed = calc.calc_wspeed(Ufinal, Vfinal)
         gphgt = conv.gphgt_to_hgt(gphgt) # convert to height (m)
         gphgt = gaussian_filter(gphgt, sigma=3) # smooth wiggles  
         totalTfinal = gaussian_filter(totalTfinal, sigma=2)
@@ -707,7 +704,7 @@ def absvort500(): # plot 500mb absolute vorticity
     cbticks = True
     makeplot(cs,title,cblabel,clevs,cbticks,ftitle)
     
-def shr06(): # plot the 0-6km shear vector NNED TO FIX INTERP AS SHR IS COMING OUT WRONG
+def shr06(): # plot the 0-6km shear vector
     # create figure
     plt.figure(figsize=(8,8))
     ph = nc.variables['PH'][time] #perturbation geopotential
@@ -716,25 +713,24 @@ def shr06(): # plot the 0-6km shear vector NNED TO FIX INTERP AS SHR IS COMING O
     totalgp = funcs.unstagger(totalgp,'Z') #total geopotential unstaggered
     U = funcs.unstagger(nc.variables['U'][time],'U') # U wind component # UNSTAGGERED
     V = funcs.unstagger(nc.variables['V'][time],'V') # V wind component
-    #u10kts = u10[time]*1.94384449 # sfc wind in kts
-    #v10kts = v10[time]*1.94384449 
-    u6 = funcs.linear_interp_height(U, totalgp, 6000) # interpolate u to 6km
-    v6 = funcs.linear_interp_height(V, totalgp, 6000) # interpolate v to 6km
+    u10kts = conv.ms_to_kts(u10[time]) # sfc wind in kts
+    v10kts = conv.ms_to_kts(v10[time]) 
+    u6 = funcs.interp_generic(6000, (totalgp/9.81), U) # interp to 6km
+    v6 = funcs.interp_generic(6000, (totalgp/9.81), V)
     u6kts = conv.ms_to_kts(u6) # convert 6km wind to kts
     v6kts = conv.ms_to_kts(v6)
-    u0 = funcs.linear_interp_height(U, totalgp, 0) # interpolate to 0m
-    v0 = funcs.linear_interp_height(V, totalgp, 0)
-    u0kts = conv.ms_to_kts(u0) # convert 0m wind to kts
-    v0kts = conv.ms_to_kts(v0)
-    ushr = u6kts - u0kts # calc 0-6 shr in kts
-    vshr = v6kts - v0kts
+    #using 10m wind as sfc wind
+    ushr = u6kts - u10kts # calc 0-6 shr in kts
+    vshr = v6kts - v10kts
+    speed = calc.calc_wspeed(ushr, vshr)
     # plot data
-    cs = m.barbs(x[::thin,::thin], y[::thin,::thin], ushr[::thin,::thin], vshr[::thin,::thin],length=opt.barbsize) #plot barbs
+    clevs = np.arange(20,145,5)
+    cs = m.contourf(x, y, speed, clevs, cmap=cm.get_cmap('gist_ncar'))
+    m.barbs(x[::thin,::thin], y[::thin,::thin], ushr[::thin,::thin], vshr[::thin,::thin],length=opt.barbsize) #plot barbs
     title = '0-6km Shear'
     ftitle = 'shr06-' 
     cblabel = 'kts'
-    clevs = False
-    cbticks = False
+    cbticks = True
     makeplot(cs,title,cblabel,clevs,cbticks,ftitle)
     
 def vertvol(): # plot the vertical velocity at levels. NEEDS CORRECTING TO VERTICAL MOTION OMEGA EQUATION
@@ -807,6 +803,96 @@ def plot_skewt(): # plot skew-t by writing data to file and use SHARPpy availabl
     wspd = conv.ms_to_kts(calc.calc_wspeed(U, V)) # calc wind spd
     skewt_data = funcs.skewt_data(timestamp, level, height, tempc, dwpt, winddir, wspd, inlat, inlon) # write the data to SPC file format
     pltfuncs.do_sharppy(skewt_data) # use SHARPpy to plot skew-t
+    
+def updraft_hel(): # plot the 2-5km updraft helicity
+    plt.figure(figsize=(8,8))
+    U = funcs.unstagger(nc.variables['U'][time],'U') # U wind component # UNSTAGGERED
+    V = funcs.unstagger(nc.variables['V'][time],'V') # V wind component
+    W = funcs.unstagger(nc.variables['W'][time],'W') # unstaggered vertical velocity
+    ph = nc.variables['PH'][time] #perturbation geopotential
+    phb = nc.variables['PHB'][time] #base state geopotential
+    totalgp = phb + ph # total geopotential
+    totalgp = funcs.unstagger(totalgp,'Z') #total geopotential unstaggered
+    heights = totalgp / 9.81
+    levels = 6 # no of levels in between bottom and top of a layer (add extra one to get to very top of layer)
+    depth = 1000 # depth of layer
+    dz = depth / (levels-1) # increment / m
+    #create arrays to hold all the values at each level
+    u2km = np.zeros((levels, np.shape(U)[1], np.shape(U)[2]))
+    v2km = np.zeros((levels, np.shape(V)[1], np.shape(V)[2]))
+    u3km = np.zeros((levels, np.shape(U)[1], np.shape(U)[2]))
+    v3km = np.zeros((levels, np.shape(V)[1], np.shape(V)[2]))
+    u4km = np.zeros((levels, np.shape(U)[1], np.shape(U)[2]))
+    v4km = np.zeros((levels, np.shape(V)[1], np.shape(V)[2]))
+    #u5km = np.zeros((levels, np.shape(U)[1], np.shape(U)[2]))
+    #v5km = np.zeros((levels, np.shape(V)[1], np.shape(V)[2]))
+    w2km = np.zeros((levels, np.shape(W)[1], np.shape(W)[2]))
+    w3km = np.zeros((levels, np.shape(W)[1], np.shape(W)[2]))
+    w4km = np.zeros((levels, np.shape(W)[1], np.shape(W)[2]))
+    #w5km = np.zeros((levels, np.shape(W)[1], np.shape(W)[2]))
+    zeta2km = np.zeros((levels, np.shape(U)[1], np.shape(U)[2]))
+    zeta3km = np.zeros((levels, np.shape(U)[1], np.shape(U)[2]))
+    zeta4km = np.zeros((levels, np.shape(U)[1], np.shape(U)[2]))
+    #zeta5km = np.zeros((levels, np.shape(U)[1], np.shape(U)[2]))
+    for i in range(0,levels): # loop through to interpolate to levels and store in array
+        print "Interpolating...doing loop ", i, "of ", (levels-1)
+        increment = i*dz
+        u2km[i] = funcs.interp_generic(2000+increment, heights, U)
+        v2km[i] = funcs.interp_generic(2000+increment, heights, V)
+        u3km[i] = funcs.interp_generic(3000+increment, heights, U)
+        v3km[i] = funcs.interp_generic(3000+increment, heights, V)
+        u4km[i] = funcs.interp_generic(4000+increment, heights, U)
+        v4km[i] = funcs.interp_generic(4000+increment, heights, V)
+        #u5km[i] = funcs.interp_generic(5000+increment, heights, U)
+        #v5km[i] = funcs.interp_generic(5000+increment, heights, V)
+        w2km[i] = funcs.interp_generic(2000+increment, heights, W)
+        w3km[i] = funcs.interp_generic(2000+increment, heights, W)
+        w4km[i] = funcs.interp_generic(2000+increment, heights, W)
+        #w5km[i] = funcs.interp_generic(2000+increment, heights, W)
+        zeta2km[i] = calc.calc_vertvort(u2km[i], v2km[i], dx)
+        zeta3km[i] = calc.calc_vertvort(u3km[i], v3km[i], dx)
+        zeta4km[i] = calc.calc_vertvort(u4km[i], v4km[i], dx)
+        #zeta5km[i] = calc.calc_vertvort(u5km[i], v5km[i], dx)
+    # calc the layer mean
+    w2to3 = np.mean(w2km, axis=0)
+    w3to4 = np.mean(w3km, axis=0)
+    w4to5 = np.mean(w4km, axis=0)
+    zeta2to3 = np.mean(zeta2km, axis=0)
+    zeta3to4 = np.mean(zeta3km, axis=0)
+    zeta4to5 = np.mean(zeta4km, axis=0)
+    # calc the 2-5km UH
+    UH = ( w2to3*zeta2to3 + w3to4*zeta3to4 + w4to5*zeta4to5 ) * 1000
+    UH = funcs.nine_point_smooth(UH)
+    #u2km = funcs.interp_generic(2000, heights, U)
+    #v2km = funcs.interp_generic(2000, heights, V)
+    #u3km = funcs.interp_generic(3000, heights, U)
+    #v3km = funcs.interp_generic(3000, heights, V)
+    #u4km = funcs.interp_generic(4000, heights, U)
+    #v4km = funcs.interp_generic(4000, heights, V)
+    #u5km = funcs.interp_generic(5000, heights, U)
+    #v5km = funcs.interp_generic(5000, heights, V)
+    #w2km = funcs.interp_generic(2000, heights, W)
+    #w3km = funcs.interp_generic(2000, heights, W)
+    #w4km = funcs.interp_generic(2000, heights, W)
+    #w5km = funcs.interp_generic(2000, heights, W)
+    #w2to3 = 0.5 * ( w2km + w3km )
+    #w3to4 = 0.5 * ( w3km + w4km )
+    #w4to5 = 0.5 * ( w4km + w5km )
+    #zeta2km = calc.calc_vertvort(u2km, v2km, dx)
+    #zeta3km = calc.calc_vertvort(u3km, v3km, dx)
+    #zeta4km = calc.calc_vertvort(u4km, v4km, dx)
+    #zeta5km = calc.calc_vertvort(u5km, v5km, dx)
+    #zeta2to3 = 0.5 * ( zeta2km + zeta3km )
+    #zeta3to4 = 0.5 * ( zeta3km + zeta4km )
+    #zeta4to5 = 0.5 * ( zeta4km + zeta5km )
+    #UH = ( w2to3*zeta2to3 + w3to4*zeta3to4 + w4to5*zeta4to5 ) * 1000
+    clevs = np.arange(0,210,10) 
+    cs = m.contourf(x,y,UH,cmap=cmap.uh_colormap)
+    title = '2-5km Updraft Helicity'
+    ftitle = 'uh-' 
+    cblabel = r'$m^{2}s^{-2}$'
+    cbticks = True
+    makeplot(cs,title,cblabel,clevs,cbticks,ftitle)
     
 ### END PLOT FUNCTIONS ###
 flag = False # to check for plotting options
@@ -930,6 +1016,11 @@ for time in range(times.shape[0]):
     if opt.skewt2:
         print "Plotting Skew-t for time: ", currtime
         plot_skewt()
+        flag = True
+        
+    if opt.uh25:
+        print "Plotting 2-5km Updraft Helicity for time: ", currtime
+        updraft_hel()
         flag = True
         
     if flag is False: # do this when no options given

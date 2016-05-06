@@ -5,7 +5,7 @@ University of Oklahoma / Unversity of Reading
 funcs.py
 
 Functions for interpolating and other stuff for wrfplot package
-Last modified: 23/04/16
+Last modified: 05/05/16
 """
 
 import numpy as np
@@ -104,49 +104,6 @@ def latlon_ij2(inlat, inlon, xlat, xlong):
 
     return newi,newj
 
-# weighted linear interpolation of 3d array of data to height level
-def linear_interp_height(data, totalgp, height):
-    """
-    Interpolate 3d array of data to a specified height level
-    
-    Parameters
-    data (3d array)
-    total geopotential (3d array)
-    height (int or float) (m)
-    
-    Returns
-    Data interpolated to height level
-    """
-    #find index of level above plev    
-    heights = (totalgp / 9.81)
-    #print heights
-    #print np.min(heights), np.max(heights)
-    above = np.argmax(heights < height, axis=0)
-    below = above - 1 # index of pressure below
-    #below[below < 0] = 0
-    #print above
-    #print below
-    # pressure at level above plev 
-    nz,ny,nx = heights.shape
-    upperH = heights.reshape(nz,ny*nx)[above.flatten(),range(ny*nx)].reshape(ny,nx)
-    #print upperH
-    #pressure at level below plev
-    lowerH = heights.reshape(nz,ny*nx)[below.flatten(),range(ny*nx)].reshape(ny,nx)
-    #print lowerH
-    # value above plev
-    nz,ny,nx = data.shape
-    aboveVal = data.reshape(nz, ny*nx)[above.flatten(),range(ny*nx)].reshape(ny,nx)
-    #value below plev
-    belowVal = data.reshape(nz, ny*nx)[below.flatten(),range(ny*nx)].reshape(ny,nx)
-    # calc total dist betweek upper and lower
-    totaldist = upperH - lowerH
-    #calc weighting
-    weight =  np.abs( ( (height) - lowerH) / (totaldist) )
-    #calc interpolated value    
-    outVal = ( belowVal * (1 - weight) ) + ( aboveVal * weight)
-    #outVal[above==0] = np.nan
-    return outVal
-
 # weighted linear interpolation of 3d array of data to pressure level
 def linear_interp(data, totalp, plev):
     """
@@ -154,7 +111,7 @@ def linear_interp(data, totalp, plev):
     
     Parameters
     data (3d array)
-    total geopotential (3d array)
+    total pressure (3d array)
     Pressure level (Pa)
     
     Returns
@@ -204,7 +161,7 @@ def linear_interp(data, totalp, plev):
     #calc weighting
     weight = np.abs( ( (plev*100.) - lowerP) / (totaldist) )
     #calc interpolated value    
-    outVal = ( belowVal * (1 - weight) ) + ( aboveVal * weight)
+    outVal = ( belowVal * (1 - weight) ) + ( aboveVal * weight )
     
     return outVal
     
@@ -276,30 +233,55 @@ def extrema(mat,mode='wrap',window=10): # function to find the pressure extrema
     # (mat == mn) true if pixel is equal to the local in
     # Return the indices of the maxima, minima
     return np.nonzero(mat == mn), np.nonzero(mat == mx)
-
-## THIS FUNCTION NOT WORKING CORRECTLY ##    
-#function to interpolate data to given pressure levels    
-def interp_pres_lvls(preslvls,data,modelpreslvls):
+   
+#function to interpolate data to given level(s) using np.interp
+def interp_to_level(level, coords, data):
     """
     Parameters
-    Pressure levels (array of pressure levels in ascending order)
+    level (int/array of level(s) in INCREASING order)
     data (3d array)
-    Model pressure levels (pressure levels in model, 3d array)
+    coords (3d array of levels in INCREASING order)
     
     Returns
-    Data interpolated onto given pressure levels
+    Data interpolated onto given level
     """
     #set up dimensions of interpolated output data
     #height_dim = np.shape(data)[0]
     we_dim = np.shape(data)[1]
     sn_dim = np.shape(data)[2]
     
-    interpdata = np.zeros((len(preslvls),we_dim,sn_dim)) #array for new data
-
+    interpdata = np.zeros((we_dim,sn_dim)) #array for new data
+    coords = np.sort(coords, axis=0) # sort coords into increasing order
+        
     for i in range(we_dim): #loop to do interpolation
         for j in range(sn_dim):
-            interpdata[:,i,j] = np.interp(preslvls,data[:,i,j],modelpreslvls[:,i,j])
+            interpdata[i,j] = np.interp(level, coords[:,i,j], data[:,i,j], left=np.nan, right=np.nan)
         
     return interpdata
-##
+
+#generic linear interpolation function using scipy.interpolate.interp1d
+def interp_generic(level, coords, data):
+    """
+    Parameters
+    level - int/float of level to interpolate too
+    coords - 3d array of co-ordinates (height/pres, lat, lon)
+    data - 3d array of data on coords
     
+    Returns
+    Value at interpolated level in 2d array
+    """
+    from scipy.interpolate import interp1d
+    out = np.zeros((np.shape(data)[1],np.shape(data)[2])) # create array to hold interpolated data
+    for i in range(np.shape(data)[1]):
+        for j in range(np.shape(data)[2]):
+            f = interp1d(coords[:,i,j], data[:,i,j], kind='linear', fill_value=np.nan, bounds_error=False, assume_sorted=False)
+            out[i,j] = f(level) # do interpolation
+    return out
+    
+def nine_point_smooth(data, p=0.50, q=-0.25):
+    """
+    
+    """
+    smoothed_data = data[1:-1,1:-1] + ( p / 4. ) * ( data[:-1,1:-1] + data[1:-1,1:] + data[1:,1:-1] + data[1:-1,:-1] - ( 4 * data[1:-1,1:-1] ) \
+                  + ( q / 4. ) * ( data[:-1,1:-1] + data[:-1,1:-1] + data[1:,1:-1] + data[1:,1:-1] - (4 * data[1:-1,1:-1]) ) )
+    return smoothed_data
